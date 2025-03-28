@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase, uploadFile } from '@/lib/supabase';
+import { supabase, uploadFile, testConnection } from '@/lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
 import { TemplateRecord, TemplateType } from '@/types';
 import { extractPlaceholders } from '@/lib/template-processor';
@@ -8,6 +8,12 @@ import { extractPlaceholders } from '@/lib/template-processor';
 export async function GET() {
   try {
     console.log('正在获取模板列表...');
+    
+    // 测试数据库连接
+    const isConnected = await testConnection();
+    if (!isConnected) {
+      throw new Error('无法连接到Supabase数据库');
+    }
     
     // 从Supabase数据库查询模板列表
     const { data, error } = await supabase
@@ -43,10 +49,14 @@ export async function GET() {
     });
   } catch (error: any) {
     console.error('获取模板列表失败:', error);
+    
+    // 返回更详细的错误信息
     return NextResponse.json(
       { 
         error: `获取模板列表失败: ${error.message}`,
-        details: error.stack
+        details: error.stack,
+        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ? '已配置' : '未配置',
+        supabaseKeyConfigured: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
       },
       { status: 500 }
     );

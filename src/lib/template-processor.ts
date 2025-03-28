@@ -3,6 +3,12 @@ import { Packer, Document, Paragraph, TextRun } from 'docx';
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
 import { LarkRecord, TemplateType } from '@/types';
+import { saveAs } from 'file-saver';
+
+// 定义类型辅助函数
+const hasProperty = <T extends object, K extends string>(obj: T, key: K): obj is T & Record<K, unknown> => {
+  return key in obj;
+};
 
 // 简单的错误处理包装器
 const safeExecute = async <T,>(
@@ -29,43 +35,173 @@ export const extractPlaceholders = (content: string): string[] => {
 };
 
 // 格式化字段值
-export const formatFieldValue = (value: any): string => {
+export const formatFieldValue = (value: unknown): string => {
   if (value === null || value === undefined) {
     return '';
   }
   
-  // 处理日期类型（时间戳）
-  if (typeof value === 'number' && value > 1000000000000) {
-    try {
-      const date = new Date(value);
-      if (!isNaN(date.getTime())) {
-        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-      }
-    } catch (e) {
-      // 转换失败，继续使用默认处理
-    }
-  }
-  
   // 处理对象类型
-  if (typeof value === 'object') {
-    // 检查是否包含日期对象
-    if (value && value.type === 'DateTime' && value.value) {
-      try {
-        const date = new Date(value.value);
-        if (!isNaN(date.getTime())) {
-          return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-        }
-      } catch (e) {
-        // 转换失败，继续使用默认处理
+  if (value !== null && typeof value === 'object') {
+    // 检查是否是数组
+    if (Array.isArray(value)) {
+      // 处理飞书字段数组
+      if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+        // 尝试提取text属性
+        const textValues = value.map(item => {
+          if (typeof item === 'object' && item !== null) {
+            if ('text' in item && item.text !== undefined) {
+              return typeof item.text === 'string' ? item.text : formatFieldValue(item.text);
+            }
+          }
+          return formatFieldValue(item);
+        });
+        return textValues.join(', ');
       }
+      return value.map(item => formatFieldValue(item)).join(', ');
+    }
+    
+    const obj = value as Record<string, unknown>;
+    
+    // 处理飞书标准字段格式 {type: number, value: any}
+    if ('type' in obj && 'value' in obj) {
+      const fieldType = obj.type;
+      const fieldValue = obj.value;
+      
+      // 处理文本类型 (type = 1)
+      if (fieldType === 1) {
+        if (Array.isArray(fieldValue)) {
+          return fieldValue.map(item => {
+            if (typeof item === 'object' && item !== null && 'text' in item) {
+              return String(item.text);
+            }
+            return String(item);
+          }).join('');
+        }
+        return String(fieldValue);
+      }
+      
+      // 处理数字类型 (type = 2)
+      if (fieldType === 2) {
+        // 尝试将数字格式化为带有千位分隔符的货币格式
+        try {
+          const numValue = Number(fieldValue);
+          if (!isNaN(numValue)) {
+            return new Intl.NumberFormat('zh-CN', {
+              style: 'currency',
+              currency: 'CNY',
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2
+            }).format(numValue);
+          }
+        } catch (e) {
+          // 转换失败，继续使用默认处理
+        }
+        return String(fieldValue);
+      }
+      
+      // 处理日期类型 (type = 5 或 1003)
+      if (fieldType === 5 || fieldType === 1003) {
+        try {
+          let timestamp: number;
+          if (typeof fieldValue === 'number') {
+            timestamp = fieldValue;
+          } else if (typeof fieldValue === 'string') {
+            if (/^\d+$/.test(fieldValue.trim())) {
+              timestamp = parseInt(fieldValue.trim(), 10);
+            } else if (fieldValue.includes('-') || fieldValue.includes('/')) {
+              // 尝试解析标准日期字符串
+              const date = new Date(fieldValue);
+              if (!isNaN(date.getTime())) {
+                return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+              }
+              return fieldValue;
+            } else {
+              return fieldValue;
+            }
+          } else if (typeof fieldValue === 'object' && fieldValue !== null && 'text' in fieldValue) {
+            const textValue = String(fieldValue.text);
+            if (/^\d+$/.test(textValue.trim())) {
+              timestamp = parseInt(textValue.trim(), 10);
+            } else {
+              return textValue;
+            }
+          } else {
+            return String(fieldValue);
+          }
+          
+          // 处理时间戳
+          if (timestamp > 1000000000000) {
+            // 毫秒级时间戳
+            const date = new Date(timestamp);
+            if (!isNaN(date.getTime())) {
+              console.log(`已将时间戳 ${timestamp} 转换为日期: ${date.toISOString()}`);
+              return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            }
+          } else if (timestamp > 1000000000) {
+            // 秒级时间戳
+            const date = new Date(timestamp * 1000);
+            if (!isNaN(date.getTime())) {
+              console.log(`已将秒级时间戳 ${timestamp} 转换为日期: ${date.toISOString()}`);
+              return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            }
+          }
+        } catch (e) {
+          console.error('处理日期字段失败:', e);
+        }
+        return String(fieldValue);
+      }
+      
+      // 处理单选/多选类型 (type = 3 或 4)
+      if (fieldType === 3 || fieldType === 4) {
+        if (Array.isArray(fieldValue)) {
+          return fieldValue.map(item => {
+            if (typeof item === 'object' && item !== null && 'text' in item) {
+              return String(item.text);
+            }
+            return String(item);
+          }).join(', ');
+        }
+        return String(fieldValue);
+      }
+      
+      // 处理人员类型字段(type=11)
+      if (fieldType === 11 && Array.isArray(fieldValue)) {
+        return fieldValue.map((person: any) => {
+          if (typeof person === 'object' && person !== null) {
+            if ('name' in person && typeof person.name === 'string') {
+              return person.name;
+            }
+          }
+          return '';
+        }).filter(Boolean).join(', ');
+      }
+      
+      // 其他类型，尝试直接获取值
+      return formatFieldValue(fieldValue);
+    }
+    
+    // 处理简单对象类型
+    if ('text' in obj && obj.text !== undefined) {
+      return String(obj.text);
     }
     
     // 检查是否是货币对象
-    if (value && typeof value === 'object' && value.type === 'Currency') {
+    if ('type' in obj && obj.type === 'Currency' && 'value' in obj) {
       try {
-        // 提取货币金额和货币类型
-        const amount = parseFloat(value.value || 0);
-        const currency = value.currency || 'CNY';
+        const currencyValue = obj.value;
+        let amount: number;
+        
+        if (typeof currencyValue === 'string') {
+          amount = parseFloat(currencyValue);
+        } else if (typeof currencyValue === 'number') {
+          amount = currencyValue;
+        } else {
+          amount = 0;
+        }
+        
+        const currency = 'currency' in obj && typeof obj.currency === 'string' 
+          ? obj.currency 
+          : 'CNY';
         
         // 格式化为带有千位分隔符的货币格式
         return new Intl.NumberFormat('zh-CN', {
@@ -80,25 +216,19 @@ export const formatFieldValue = (value: any): string => {
     }
     
     // 如果是对象，尝试提取名称或标题
-    if (value.name) return value.name;
-    if (value.title) return value.title;
-    if (value.text) return value.text;
-    if (value.value) return value.value;
-    
-    // 如果是数组，映射每个项目并用逗号连接
-    if (Array.isArray(value)) {
-      return value.map(item => formatFieldValue(item)).join(', ');
-    }
+    if ('name' in obj && typeof obj.name === 'string') return obj.name;
+    if ('title' in obj && typeof obj.title === 'string') return obj.title;
+    if ('value' in obj && obj.value !== undefined) return formatFieldValue(obj.value);
     
     // 其他情况，转为JSON字符串
     try {
-      return JSON.stringify(value);
+      return JSON.stringify(obj);
     } catch (e) {
       return '[复杂对象]';
     }
   }
   
-  // 处理货币数值
+  // 处理数字类型
   if (typeof value === 'number') {
     // 尝试将数字格式化为带有千位分隔符的货币格式
     try {
@@ -113,84 +243,235 @@ export const formatFieldValue = (value: any): string => {
     }
   }
   
+  // 处理基本类型
   return String(value);
 };
 
-// 处理记录数据
-export const processRecordData = (record: LarkRecord): Record<string, any> => {
-  const processedRecord: Record<string, any> = {};
-  
-  // 添加一个默认数据，避免空数据问题
-  processedRecord['_docData'] = {
-    currentDate: new Date().toLocaleDateString(),
-    recordId: record.record_id,
-    generateTime: new Date().toISOString(),
-    year: new Date().getFullYear(),
-    month: new Date().getMonth() + 1,
-    day: new Date().getDate()
-  };
-  
-  // 处理记录中的字段
-  Object.entries(record.fields).forEach(([key, value]) => {
-    try {
-      // 使用formatFieldValue格式化字段值
-      const displayValue = formatFieldValue(value);
-      
-      // 添加原始字段名映射
-      processedRecord[key] = displayValue;
-      
-      // 同时添加无需字段名的变量，使模板中可以直接使用{fieldName}而不是{fields.fieldName}
-      // 确保没有特殊字符的安全键名
-      const safeKey = key.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-      if (safeKey !== key) {
-        processedRecord[safeKey] = displayValue;
-      }
-      
-      // 为常见字段名添加更友好的别名
-      const lowerKey = key.toLowerCase();
-      if (lowerKey.includes('日期') || lowerKey.includes('时间') || lowerKey.includes('date') || lowerKey.includes('time')) {
-        // 尝试解析为日期对象，添加更多格式的日期
-        try {
-          let dateVal;
-          if (typeof value === 'string') {
-            dateVal = new Date(value);
-          } else if (typeof value === 'number') {
-            dateVal = new Date(value);
-          } else if (value && typeof value === 'object' && value.value) {
-            dateVal = new Date(value.value);
-          }
-          
-          if (dateVal && !isNaN(dateVal.getTime())) {
-            const dateSuffix = safeKey !== key ? `_${safeKey}_` : `_${key.replace(/\s+/g, '_')}_`;
-            processedRecord[`${dateSuffix}年`] = dateVal.getFullYear();
-            processedRecord[`${dateSuffix}月`] = String(dateVal.getMonth() + 1).padStart(2, '0');
-            processedRecord[`${dateSuffix}日`] = String(dateVal.getDate()).padStart(2, '0');
-            processedRecord[`${dateSuffix}年月日`] = `${dateVal.getFullYear()}年${dateVal.getMonth() + 1}月${dateVal.getDate()}日`;
-          }
-        } catch (e) {
-          // 日期解析失败，忽略
-          console.warn(`日期字段 "${key}" 解析失败:`, e);
-        }
-      }
-    } catch (e) {
-      console.error(`处理字段 "${key}" 时出错:`, e);
-      processedRecord[key] = String(value || '');
-    }
-  });
-  
-  // 添加调试信息
-  console.log('处理后的记录数据:', {
-    recordId: record.record_id,
-    fieldCount: Object.keys(processedRecord).length
-  });
-  
-  return processedRecord;
+// 获取记录字段
+const getRecordFields = (record: LarkRecord | Record<string, any>): Record<string, any> => {
+  return 'fields' in record ? record.fields : record;
 };
 
-// 处理Word模板
+// 获取记录ID
+const getRecordId = (record: any): string => {
+  if (!record) return 'unknown';
+  if (typeof record === 'string') return record;
+  return record.record_id || record.recordId || 'unknown';
+};
+
+// 处理记录数据
+const processRecordData = (record: any): Record<string, any> => {
+  try {
+    console.log('处理记录数据:', record);
+    
+    // 调试：输出记录结构
+    console.log('记录ID:', record.record_id);
+    console.log('字段结构：');
+    if (record.fields) {
+      Object.entries(record.fields).forEach(([key, value]) => {
+        if (value !== null && typeof value === 'object') {
+          console.log(`字段 ${key}:`, '类型:', typeof value, 
+            'isArray:', Array.isArray(value), 
+            '值类型:', (value as any).type || '未知', 
+            '值示例:', JSON.stringify(value).slice(0, 100) + (JSON.stringify(value).length > 100 ? '...' : '')
+          );
+        } else {
+          console.log(`字段 ${key}:`, '类型:', typeof value, '值:', value);
+        }
+      });
+    }
+    
+    // 如果record是字符串（recordId），返回空对象
+    if (typeof record === 'string') {
+      console.warn('记录是字符串类型:', record);
+      return {};
+    }
+    
+    // 如果record是null或undefined
+    if (!record) {
+      console.warn('记录为空');
+      return {};
+    }
+    
+    // 如果record是对象但没有fields属性
+    if (!record.fields) {
+      console.warn('记录缺少fields属性:', record);
+      // 尝试直接使用record作为fields
+      return typeof record === 'object' ? record : {};
+    }
+    
+    // 确保fields是对象类型
+    if (typeof record.fields !== 'object') {
+      console.warn('fields不是对象类型:', record.fields);
+      return {};
+    }
+    
+    // 预处理fields中的对象类型值，确保模板替换能正确处理
+    const processedFields: Record<string, any> = {};
+    
+    Object.entries(record.fields).forEach(([key, value]) => {
+      // 直接存储原始值
+      processedFields[key] = value;
+      
+      // 尝试解析JSON字符串
+      if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
+        try {
+          const parsedValue = JSON.parse(value);
+          processedFields[`${key}_parsed`] = parsedValue;
+          processedFields[`${key}_text`] = formatFieldValue(parsedValue);
+          console.log(`成功解析JSON字符串字段: ${key}`);
+        } catch (e) {
+          // 解析失败，保留原始字符串
+          console.log(`无法解析JSON字符串字段: ${key}, 原因:`, e);
+        }
+      }
+      // 为对象类型值添加额外的文本属性，方便模板引擎使用
+      else if (value !== null && typeof value === 'object') {
+        if ('text' in value) {
+          // 如果对象有text属性，添加一个key_text属性，方便模板直接访问
+          processedFields[`${key}_text`] = formatFieldValue(value);
+        } else if (Array.isArray(value)) {
+          // 如果是数组，提取所有项的文本形式
+          processedFields[`${key}_text`] = value.map(item => formatFieldValue(item)).join(', ');
+        } else {
+          // 其他对象，转换为文本
+          processedFields[`${key}_text`] = formatFieldValue(value);
+        }
+        
+        // 对于特定类型的字段进行格式化处理
+        if ('type' in value) {
+          const typeValue = (value as any).type;
+          // 保存类型信息，方便调试
+          processedFields[`${key}_type`] = typeValue;
+          
+          // 对于日期类型，尝试提供额外的格式化版本
+          if (typeValue === 5 || typeValue === 1003) {
+            const formattedDate = formatFieldValue(value);
+            processedFields[`${key}_formatted`] = formattedDate;
+            console.log(`格式化日期字段 ${key}:`, formattedDate);
+          }
+        }
+      }
+    });
+    
+    console.log('成功处理记录数据:', processedFields);
+    return processedFields;
+  } catch (error) {
+    console.error('处理记录数据时出错:', error);
+    return {};
+  }
+};
+
+// 创建错误报告文档
+async function createErrorReportDoc(record: LarkRecord | Record<string, any>, error: unknown, templateName: string): Promise<Blob> {
+  // 创建字段数组
+  const fieldParagraphs: Paragraph[] = [];
+  
+  // 添加记录字段到段落数组
+  const fields = getRecordFields(record);
+  
+  Object.entries(fields).forEach(([key, value]) => {
+    const displayValue = formatFieldValue(value);
+    
+    fieldParagraphs.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: `${key}: ${displayValue}`,
+            size: 22
+          })
+        ]
+      })
+    );
+  });
+  
+  // 创建一个新文档作为备用方案
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      children: [
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: `${templateName} - 处理失败`,
+              bold: true,
+              size: 28
+            })
+          ]
+        }),
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: `错误信息: ${error instanceof Error ? error.message : '未知错误'}`,
+              size: 24
+            })
+          ]
+        }),
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: `记录ID: ${getRecordId(record)}`,
+              size: 22
+            })
+          ]
+        }),
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: '字段数据:',
+              bold: true,
+              size: 24
+            })
+          ]
+        }),
+        // 添加所有字段段落
+        ...fieldParagraphs
+      ]
+    }]
+  });
+  
+  return Packer.toBlob(doc);
+}
+
+// 创建错误报告工作簿
+async function createErrorReportWorkbook(record: LarkRecord | Record<string, any>, error: unknown, templateName: string): Promise<Blob> {
+  // 创建一个新工作簿
+  const workbook = XLSX.utils.book_new();
+  
+  // 错误信息数据
+  const errorData = [
+    ['模板处理失败'],
+    [`模板名称: ${templateName}`],
+    [`错误信息: ${error instanceof Error ? error.message : '未知错误'}`],
+    [`记录ID: ${getRecordId(record)}`],
+    [''],
+    ['字段数据:']
+  ];
+  
+  // 添加记录字段到工作表
+  const fields = getRecordFields(record);
+  
+  Object.entries(fields).forEach(([key, value]) => {
+    const displayValue = formatFieldValue(value);
+    errorData.push([`${key}:`, displayValue]);
+  });
+  
+  // 创建工作表
+  const worksheet = XLSX.utils.aoa_to_sheet(errorData);
+  
+  // 将工作表添加到工作簿
+  XLSX.utils.book_append_sheet(workbook, worksheet, '错误报告');
+  
+  // 生成Excel文件
+  const excelOutput = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  
+  return new Blob([excelOutput], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// 处理Word模板 - 核心处理函数
 export const processDocxTemplate = async (
   templateArrayBuffer: ArrayBuffer,
-  record: LarkRecord,
+  record: LarkRecord | Record<string, any>,
   templateName: string
 ): Promise<Blob> => {
   return new Promise<Blob>(async (resolve, reject) => {
@@ -225,10 +506,24 @@ export const processDocxTemplate = async (
                 // 记录每次尝试获取的占位符值
                 console.log(`尝试从作用域获取值 "${tag}"`, scope);
                 
+                // 检查是否是"字段_text"格式的标签 - 这是我们为对象值预先处理的文本格式
+                if (tag.endsWith('_text') && scope[tag] !== undefined) {
+                  console.log(`匹配预处理文本字段: ${tag} =`, scope[tag]);
+                  return scope[tag];
+                }
+                
                 // 直接匹配字段标题
                 if (scope[tag] !== undefined) {
                   console.log(`匹配成功: ${tag} =`, scope[tag]);
-                  return scope[tag];
+                  const value = scope[tag];
+                  
+                  // 对于对象类型的值，尝试转换为文本
+                  if (value !== null && typeof value === 'object') {
+                    console.log(`将对象值转换为文本: ${tag}`);
+                    return formatFieldValue(value);
+                  }
+                  
+                  return value === null || value === undefined ? '' : String(value);
                 }
                 
                 // 尝试查找字段的变体（忽略大小写、空格等）
@@ -236,27 +531,46 @@ export const processDocxTemplate = async (
                 for (const [key, value] of Object.entries(scope)) {
                   if (key.toLowerCase() === lowerTag) {
                     console.log(`找到近似匹配: ${key} =`, value);
-                    return value;
+                    
+                    // 对于对象类型的值，尝试转换为文本
+                    if (value !== null && typeof value === 'object') {
+                      console.log(`将对象值转换为文本: ${key}`);
+                      return formatFieldValue(value);
+                    }
+                    
+                    return value === null || value === undefined ? '' : String(value);
                   }
                 }
                 
                 console.log(`未找到值: ${tag}`);
-                return `[${tag}]`;
+                // 返回占位符原来的文本，保留格式
+                return `{${tag}}`;
               }
             };
           },
           nullGetter: function(part: any) {
-            // 如果是标签为空，显示占位符而不是空内容
+            // 如果是标签为空，返回原始占位符而不是空字符串
             if (part.module === "rawxml") {
               return "";
             }
-            return `[${part.value || "无内容"}]`;
+            
+            // 提取标签名称
+            let tagName = part.value || '';
+            
+            // 尝试查找对应的"_text"属性
+            if (tagName && !tagName.endsWith('_text')) {
+              const textTagName = `${tagName}_text`;
+              console.log(`尝试查找文本格式字段: ${textTagName}`);
+              return `{${textTagName}}`;
+            }
+            
+            // 将所有未找到的值替换为原始占位符
+            return part.value ? `{${part.value}}` : '';
           }
         });
 
-        // 设置数据并渲染
-        doc.setData(processedRecord);
-        doc.render();
+        // 设置数据并渲染 - 使用新的API (render方法现在接受数据参数)
+        doc.render(processedRecord);
         
         // 生成输出
         const output = doc.getZip().generate({
@@ -287,10 +601,10 @@ export const processDocxTemplate = async (
   });
 };
 
-// 处理Excel模板
+// 处理Excel模板 - 核心处理函数
 export const processXlsxTemplate = async (
   templateArrayBuffer: ArrayBuffer,
-  record: LarkRecord,
+  record: LarkRecord | Record<string, any>,
   templateName: string
 ): Promise<Blob> => {
   try {
@@ -299,7 +613,7 @@ export const processXlsxTemplate = async (
     // 处理记录数据
     const processedRecord = processRecordData(record);
     console.log('处理后的记录数据:', {
-      recordId: record.record_id,
+      recordId: getRecordId(record),
       fieldCount: Object.keys(processedRecord).length
     });
 
@@ -352,23 +666,26 @@ export const processXlsxTemplate = async (
               console.log(`在单元格 ${cellAddress} 中找到占位符: {${fieldName}}`);
               
               // 查找对应的字段值 - 使用处理后的记录数据
-              let fieldValue = processedRecord[fieldName];
+              let fieldValue: string;
               
-              if (fieldValue === undefined) {
-                console.log(`未找到匹配: ${fieldName}`);
-                // 尝试查找字段的变体
+              // 直接查找完全匹配
+              if (processedRecord[fieldName] !== undefined) {
+                fieldValue = String(processedRecord[fieldName]);
+                console.log(`匹配成功: ${fieldName} =`, fieldValue);
+              } else {
+                // 尝试查找字段的变体（忽略大小写、空格等）
+                console.log(`未找到完全匹配: ${fieldName}`);
                 const lowerFieldName = fieldName.toLowerCase();
                 const fieldKeys = Object.keys(processedRecord);
                 const matchedKey = fieldKeys.find(key => key.toLowerCase() === lowerFieldName);
                 
                 if (matchedKey) {
                   console.log(`找到近似匹配: ${matchedKey}`);
-                  fieldValue = processedRecord[matchedKey];
+                  fieldValue = String(processedRecord[matchedKey]);
                 } else {
-                  fieldValue = `[${fieldName}]`;
+                  console.log(`未找到值: ${fieldName}`);
+                  fieldValue = `{${fieldName}}`;
                 }
-              } else {
-                console.log(`匹配成功: ${fieldName} =`, fieldValue);
               }
               
               // 替换占位符
@@ -410,11 +727,11 @@ export const processXlsxTemplate = async (
   }
 };
 
-// 根据模板类型处理模板
+// 根据模板类型处理模板 - 统一入口
 export const processTemplate = async (
   templateArrayBuffer: ArrayBuffer,
   templateType: TemplateType,
-  record: LarkRecord,
+  record: LarkRecord | Record<string, any>,
   templateName: string
 ): Promise<Blob> => {
   if (templateType === 'docx') {
@@ -424,104 +741,24 @@ export const processTemplate = async (
   }
 };
 
-// 创建错误报告文档
-async function createErrorReportDoc(record: LarkRecord, error: any, templateName: string): Promise<Blob> {
-  // 创建字段数组
-  const fieldParagraphs: Paragraph[] = [];
-  
-  // 添加记录字段到段落数组
-  Object.entries(record.fields).forEach(([key, value]) => {
-    const displayValue = formatFieldValue(value);
-    
-    fieldParagraphs.push(
-      new Paragraph({
-        children: [
-          new TextRun({
-            text: `${key}: ${displayValue}`,
-            size: 22
-          })
-        ]
-      })
-    );
-  });
-  
-  // 创建一个新文档作为备用方案
-  const doc = new Document({
-    sections: [{
-      properties: {},
-      children: [
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: `${templateName} - 处理失败`,
-              bold: true,
-              size: 28
-            })
-          ]
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: `错误信息: ${error ? (error.message || '未知错误') : '未知错误'}`,
-              size: 24
-            })
-          ]
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: `记录ID: ${record.record_id}`,
-              size: 22
-            })
-          ]
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: '字段数据:',
-              bold: true,
-              size: 24
-            })
-          ]
-        }),
-        // 添加所有字段段落
-        ...fieldParagraphs
-      ]
-    }]
-  });
-  
-  return Packer.toBlob(doc);
-}
+// 从File对象处理模板 - 便捷函数
+export const processTemplateFromFile = async (
+  templateFile: File,
+  templateType: TemplateType,
+  record: LarkRecord | Record<string, any>,
+  templateName: string
+): Promise<Blob> => {
+  const arrayBuffer = await templateFile.arrayBuffer();
+  return processTemplate(arrayBuffer, templateType, record, templateName);
+};
 
-// 创建错误报告工作簿
-async function createErrorReportWorkbook(record: LarkRecord, error: any, templateName: string): Promise<Blob> {
-  // 创建一个新工作簿
-  const workbook = XLSX.utils.book_new();
-  
-  // 错误信息数据
-  const errorData = [
-    ['模板处理失败'],
-    [`模板名称: ${templateName}`],
-    [`错误信息: ${error ? (error.message || '未知错误') : '未知错误'}`],
-    [`记录ID: ${record.record_id}`],
-    [''],
-    ['字段数据:']
-  ];
-  
-  // 添加记录字段到工作表
-  Object.entries(record.fields).forEach(([key, value]) => {
-    const displayValue = formatFieldValue(value);
-    errorData.push([`${key}:`, displayValue]);
-  });
-  
-  // 创建工作表
-  const worksheet = XLSX.utils.aoa_to_sheet(errorData);
-  
-  // 将工作表添加到工作簿
-  XLSX.utils.book_append_sheet(workbook, worksheet, '错误报告');
-  
-  // 生成Excel文件
-  const excelOutput = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-  
-  return new Blob([excelOutput], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-} 
+// 生成文件名
+export const generateFileName = (templateName: string, templateType: TemplateType): string => {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${templateName}_${timestamp}.${templateType}`;
+};
+
+// 下载文件
+export const downloadFile = (blob: Blob, fileName: string): void => {
+  saveAs(blob, fileName);
+};

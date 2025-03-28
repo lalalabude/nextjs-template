@@ -1,5 +1,11 @@
 import { LarkRecord } from '@/types';
 
+// 飞书API基础URL
+const FEISHU_BASE_URL = 'https://base-api.feishu.cn';
+
+// 从环境变量获取Personal Base Token
+const PERSONAL_BASE_TOKEN = process.env.LARK_PERSONAL_BASE_TOKEN;
+
 // 判断是否在浏览器环境
 const isBrowser = typeof window !== 'undefined';
 
@@ -22,207 +28,248 @@ const safeExecute = async <T,>(
 
 // 确保URL是完整的绝对URL
 const ensureFullUrl = (url: string): string => {
-  // 如果已经是绝对URL，直接返回
-  if (url.startsWith('http')) {
-    return url;
-  }
-  
-  // 在浏览器环境中，使用window.location.origin
-  if (isBrowser && typeof window !== 'undefined') {
-    // 确保url以/开头
-    const path = url.startsWith('/') ? url : `/${url}`;
-    return `${window.location.origin}${path}`;
-  }
-  
-  // 在服务器环境中，返回相对路径
-  // 注意：这可能导致在某些服务器环境中调用fetch时出错
-  console.warn('在非浏览器环境中使用相对URL可能导致错误:', url);
-  return url;
-};
-
-// 统一创建URL的函数
-const createApiUrl = (path: string, params?: Record<string, string>): string => {
-  if (isBrowser) {
-    try {
-      // 在浏览器环境中使用完整URL
-      const origin = window.location.origin;
-      // 确保path以/开头
-      const cleanPath = path.startsWith('/') ? path : `/${path}`;
-      const url = new URL(cleanPath, origin);
-      
-      if (params) {
-        Object.entries(params).forEach(([key, value]) => {
-          if (value) url.searchParams.append(key, value);
-        });
-      }
-      return url.toString();
-    } catch (error) {
-      console.error('创建URL失败:', error);
-      // 如果失败，返回确保的完整URL路径
-      return ensureFullUrl(path);
+  try {
+    // 如果已经是绝对URL，直接返回
+    if (url.startsWith('http')) {
+      return url;
     }
-  } else {
-    // 在服务器环境中使用相对URL
-    if (!params) return path;
     
-    const queryString = Object.entries(params)
-      .filter(([_, value]) => value)
-      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-      .join('&');
+    // 在浏览器环境中，使用window.location.origin获取当前URL包括端口
+    if (isBrowser) {
+      const origin = window.location.origin;
+      const path = url.startsWith('/') ? url : `/${url}`;
+      console.log(`使用浏览器环境URL: ${origin}${path}`);
+      return `${origin}${path}`;
+    }
     
-    return queryString ? `${path}?${queryString}` : path;
+    // 在服务器端环境中，更智能地处理URL
+    // 添加相对路径支持，因为在相同进程中运行时，服务器可以直接访问自身的API
+    if (url.startsWith('/api/')) {
+      // 如果是在同一服务器上的API请求，直接使用相对路径
+      console.log(`使用相对API路径: ${url}`);
+      return url;
+    }
+    
+    // 否则使用环境变量中的API基础URL
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3000';
+    const path = url.startsWith('/') ? url : `/${url}`;
+    console.log(`使用配置的API基础URL: ${baseUrl}${path}`);
+    return `${baseUrl}${path}`;
+  } catch (error) {
+    console.error('构建完整URL失败:', error);
+    // 作为备用方案，返回原始URL
+    console.log(`使用原始URL作为备用: ${url}`);
+    return url;
   }
 };
 
 // 从飞书多维表格获取记录信息
-export const getLarkRecords = async (
-  appId: string,
-  tableId: string,
-  recordIds: string[]
-): Promise<LarkRecord[]> => {
+export async function getLarkRecords(appId: string, tableId: string, recordIds: string[]): Promise<LarkRecord[]> {
   try {
-    console.log('开始获取飞书记录数据', { appId, tableId, recordsCount: recordIds.length });
-    
-    // 这里应该调用飞书开放平台API获取记录
-    // 在实际部署环境中，应该使用飞书SDK或者直接调用飞书API
+    console.log('获取飞书记录:', { appId, tableId, recordIds });
 
-    // 准备API URL
-    const recordIdsStr = recordIds.join(',');
-    const apiUrl = createApiUrl('/api/lark/records', {
-      appId,
-      tableId,
-      recordIds: recordIdsStr
-    });
+    // 验证参数
+    if (!appId || !tableId) {
+      console.error('缺少必要参数: appId或tableId');
+      throw new Error('缺少必要参数');
+    }
     
-    console.log('获取飞书记录的URL:', apiUrl);
-    
-    // 确保URL是完整的
-    const fullUrl = ensureFullUrl(apiUrl);
-    console.log('使用完整URL:', fullUrl);
-    
-    // 使用safeExecute包装API调用，提供更好的错误处理
-    const response = await safeExecute(
-      () => fetch(fullUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json'
+    // 验证记录ID数组
+    if (!recordIds || !Array.isArray(recordIds) || recordIds.length === 0) {
+      console.warn('未提供有效的记录ID数组');
+      return [];
+    }
+
+    // 开发环境下直接使用模拟数据
+    if (process.env.NODE_ENV === 'development' && recordIds.length === 0) {
+      console.log('开发环境: 生成模拟记录数据');
+      return [
+        {
+          record_id: 'mock_record_1',
+          fields: {
+            '标题': '测试项目招标',
+            '描述': '这是一个测试项目的招标记录',
+            '创建日期': new Date().toISOString(),
+            '状态': '进行中',
+            '报名登记日期': new Date().toLocaleDateString(),
+            '项目名称': '测试工程建设项目',
+            '报名标段号': 'BID-2023-001',
+            '报名单位名称': '测试建筑有限公司',
+            '联合体信息': '无',
+            '联系人': '张三',
+            '联系电话': '13800138000',
+            '电子邮箱': 'test@example.com',
+            '报名单位地址': '测试市测试区测试路123号'
+          }
         }
-      }),
-      '获取飞书记录API调用失败'
-    );
-    
-    if (!response || !response.ok) {
-      throw new Error(`获取飞书记录失败: ${response?.statusText || '未知错误'}`);
+      ];
     }
-    
-    // 使用safeExecute包装响应解析，提供更好的错误处理
-    const data = await safeExecute(
-      () => response.json(),
-      '解析飞书记录响应失败'
-    );
-    
-    if (!data || !data.records || !Array.isArray(data.records)) {
-      console.error('飞书API返回数据格式不正确:', data);
-      throw new Error('飞书API返回数据格式不正确');
+
+    // 使用ensureFullUrl构建完整URL
+    const apiUrl = ensureFullUrl('/api/lark/records');
+    console.log('请求URL:', apiUrl);
+
+    // 调用服务端API获取记录
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        appId,
+        tableId,
+        recordIds
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('获取飞书记录失败:', errorData);
+      
+      // 开发环境下使用模拟数据
+      if (process.env.NODE_ENV === 'development') {
+        console.log('开发环境: 返回模拟记录数据(响应错误)');
+        return recordIds.map(id => ({
+          record_id: id,
+          fields: {
+            '标题': `测试记录 ${id}`,
+            '描述': '这是一个测试记录',
+            '创建日期': new Date().toISOString(),
+            '状态': '进行中',
+            '报名登记日期': new Date().toLocaleDateString(),
+            '项目名称': '测试工程建设项目',
+            '报名标段号': 'BID-2023-001',
+            '报名单位名称': '测试建筑有限公司',
+            '联合体信息': '无',
+            '联系人': '张三',
+            '联系电话': '13800138000',
+            '电子邮箱': 'test@example.com',
+            '报名单位地址': '测试市测试区测试路123号'
+          }
+        }));
+      }
+      
+      throw new Error(`获取记录失败: ${JSON.stringify(errorData)}`);
     }
+
+    const data = await response.json();
+    console.log('飞书API返回记录数据:', data);
     
-    console.log(`成功获取 ${data.records.length} 条飞书记录`);
+    if (!data.records || !Array.isArray(data.records)) {
+      console.error('飞书API返回数据格式不符合预期:', data);
+      
+      // 开发环境下使用模拟数据
+      if (process.env.NODE_ENV === 'development') {
+        console.log('开发环境: 返回模拟记录数据(格式错误)');
+        return recordIds.map(id => ({
+          record_id: id,
+          fields: {
+            '标题': `测试记录 ${id}`,
+            '描述': '这是一个测试记录',
+            '创建日期': new Date().toISOString(),
+            '状态': '进行中',
+            '报名登记日期': new Date().toLocaleDateString(),
+            '项目名称': '测试工程建设项目',
+            '报名标段号': 'BID-2023-001',
+            '报名单位名称': '测试建筑有限公司',
+            '联合体信息': '无',
+            '联系人': '张三',
+            '联系电话': '13800138000',
+            '电子邮箱': 'test@example.com',
+            '报名单位地址': '测试市测试区测试路123号'
+          }
+        }));
+      }
+      
+      throw new Error('API返回数据格式错误');
+    }
+
     return data.records;
   } catch (error) {
     console.error('获取飞书记录失败:', error);
     
-    // 在开发环境中，如果出现错误，返回模拟数据
+    // 开发环境下使用模拟数据
     if (process.env.NODE_ENV === 'development') {
-      console.log('开发环境: 返回模拟数据');
-      
-      // 返回更完整的模拟数据，确保有足够的字段
-      return recordIds.map(recordId => ({
-        record_id: recordId,
+      console.log('开发环境: 返回模拟记录数据(捕获错误)');
+      return recordIds.map(id => ({
+        record_id: id,
         fields: {
-          '标题': `测试记录 ${recordId}`,
-          '描述': `这是测试记录 ${recordId} 的详细描述，用于测试模板中的占位符替换。`,
-          '申请人': '张三',
-          '申请日期': new Date().toISOString().split('T')[0],
+          '标题': `测试记录 ${id}`,
+          '描述': '这是一个测试记录',
           '创建日期': new Date().toISOString(),
           '状态': '进行中',
-          '部门': '研发部',
-          '职位': '高级工程师',
-          '申请理由': '业务需要',
-          '负责人': {
-            name: '李四',
-            id: 'user_123456'
-          },
-          '金额': '5000',
-          '数量': '10',
-          '备注': '请尽快审批',
-          '费用类型': '差旅费',
-          '预算': '10000',
-          '实际金额': '4800',
-          '剩余金额': '5200',
-          '单价': '500',
-          '开始日期': new Date().toISOString().split('T')[0],
-          '结束日期': new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-          '联系方式': '13800138000',
-          '邮箱': 'test@example.com'
+          '报名登记日期': new Date().toLocaleDateString(),
+          '项目名称': '测试工程建设项目',
+          '报名标段号': 'BID-2023-001',
+          '报名单位名称': '测试建筑有限公司',
+          '联合体信息': '无',
+          '联系人': '张三',
+          '联系电话': '13800138000',
+          '电子邮箱': 'test@example.com',
+          '报名单位地址': '测试市测试区测试路123号'
         }
       }));
     }
     
     throw error;
   }
-};
+}
 
 // 更新飞书多维表格记录
-export const updateLarkRecord = async (
+export async function updateLarkRecord(
   appId: string,
   tableId: string,
   recordId: string,
   fields: Record<string, any>
-): Promise<void> => {
+) {
   try {
-    console.log(`开始更新飞书记录 ${recordId}`, fields);
-    
-    // 开发环境模拟成功
-    if (process.env.NODE_ENV === 'development') {
-      console.log('开发环境: 模拟成功更新记录', { recordId, fields });
-      return;
+    console.log('更新飞书记录:', { appId, tableId, recordId, fields });
+
+    // 验证参数
+    if (!appId || !tableId || !recordId || !fields) {
+      console.error('缺少必要参数');
+      throw new Error('缺少必要参数');
     }
+
+    // 使用环境变量中的应用ID，如果有的话
+    const effectiveAppId = process.env.NEXT_PUBLIC_LARK_APP_ID || appId;
     
-    // 以下代码在生产环境中执行
-    
-    // 准备API URL
-    const apiUrl = createApiUrl('/api/lark/update-record');
-    
-    console.log('更新飞书记录的URL:', apiUrl);
-    
-    // 确保URL是完整的
-    const fullUrl = ensureFullUrl(apiUrl);
-    console.log('使用完整URL:', fullUrl);
-    
-    // 使用safeExecute包装API调用，提供更好的错误处理
-    const response = await safeExecute(
-      () => fetch(fullUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          appId,
-          tableId,
-          recordId,
-          fields
-        }),
-      }),
-      '更新飞书记录API调用失败'
-    );
-    
-    if (!response || !response.ok) {
-      throw new Error(`更新飞书记录失败: ${response?.statusText || '未知错误'}`);
+    // 使用ensureFullUrl构建完整URL
+    const apiUrl = ensureFullUrl('/api/lark/update-record');
+    console.log('请求URL:', apiUrl);
+
+    // 调用服务端API更新记录
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        appId: effectiveAppId,
+        tableId,
+        recordId,
+        fields
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`更新记录失败: ${JSON.stringify(errorData)}`);
     }
-    
-    console.log(`成功更新飞书记录 ${recordId}`);
-  } catch (error) {
+
+    const data = await response.json();
+    console.log('更新记录响应:', data);
+
+    return data;
+  } catch (error: any) {
     console.error('更新飞书记录失败:', error);
+    
+    // 在开发环境中模拟成功
+    if (process.env.NODE_ENV === 'development') {
+      console.log('开发环境: 模拟更新记录成功');
+      return { success: true };
+    }
+    
     throw error;
   }
-}; 
+} 

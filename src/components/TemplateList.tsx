@@ -186,20 +186,28 @@ export default function TemplateList({
     
     try {
       const response = await fetch('/api/templates');
+      console.log('获取模板列表响应:', response.status);
+      setDebugInfo(`API响应状态: ${response.status}`);
+      
       const data = await response.json();
       
       if (!response.ok) {
         throw new Error(data.error || '获取模板列表失败');
       }
       
-      // 添加调试信息
-      const debugText = `响应状态: ${response.status}, 
-                        接收到的模板数量: ${data.templates ? data.templates.length : 0}, 
-                        响应数据: ${JSON.stringify(data).substring(0, 200)}...`;
-      setDebugInfo(debugText);
-      
       if (Array.isArray(data.templates)) {
+        console.log(`获取到 ${data.templates.length} 个模板`);
+        setDebugInfo(prev => `${prev}\n模板数量: ${data.templates.length}`);
         setTemplates(data.templates);
+        
+        // 如果有选中的模板ID，确保它仍然存在于新的模板列表中
+        if (selectedTemplateId) {
+          const templateExists = data.templates.some(t => t.id === selectedTemplateId);
+          if (!templateExists) {
+            console.log('之前选中的模板已不存在，清除选择');
+            onSelectTemplate(null);
+          }
+        }
       } else {
         console.error('接收到的数据不是数组:', data);
         setTemplates([]);
@@ -233,20 +241,22 @@ export default function TemplateList({
         throw new Error(data.error || '删除模板失败');
       }
       
-      // 刷新模板列表
-      fetchTemplates();
-      onRefresh();
-      
       // 如果删除的是当前选中的模板，清除选择
       if (selectedTemplateId === templateId) {
         onSelectTemplate(null);
       }
+      
+      // 刷新模板列表
+      fetchTemplates();
+      onRefresh();
     } catch (error: any) {
       alert(`删除失败: ${error.message}`);
     }
   };
 
   const handleSelectTemplate = (template: TemplateRecord) => {
+    console.log('选择模板:', template.id);
+    setDebugInfo(prev => `${prev}\n选择模板: ${template.id}`);
     onSelectTemplate(template);
   };
 
@@ -278,29 +288,6 @@ export default function TemplateList({
     );
   }
 
-  if (templates.length === 0) {
-    return (
-      <div className="p-6 text-center bg-gray-50 rounded-md">
-        <p className="text-gray-500">暂无模板</p>
-        <p className="text-sm text-gray-400 mt-2">请上传新模板</p>
-        
-        {debugInfo && (
-          <div className="mt-4 p-2 bg-gray-100 text-gray-800 text-xs overflow-auto max-h-32 rounded">
-            <p className="font-medium mb-1">调试信息：</p>
-            <pre>{debugInfo}</pre>
-          </div>
-        )}
-        
-        <button 
-          onClick={fetchTemplates}
-          className="mt-4 px-4 py-2 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600"
-        >
-          刷新列表
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="bg-white rounded-lg shadow-md overflow-hidden">
       <div className="px-4 py-3 bg-gray-50 border-b flex justify-between items-center">
@@ -327,23 +314,29 @@ export default function TemplateList({
         </button>
       </div>
       
-      {/* 调试信息 */}
       {debugInfo && (
-        <div className="p-2 bg-gray-50 border-b text-xs text-gray-500 overflow-auto max-h-20">
+        <div className="p-2 bg-gray-50 border-b text-xs text-gray-500">
           <pre className="whitespace-pre-wrap">{debugInfo}</pre>
         </div>
       )}
       
       <div className="p-4">
-        {templates.map((template) => (
-          <TemplateItem
-            key={template.id}
-            template={template}
-            onDelete={handleDeleteTemplate}
-            onSelect={handleSelectTemplate}
-            isSelected={selectedTemplateId === template.id}
-          />
-        ))}
+        {templates.length === 0 ? (
+          <div className="text-center py-8">
+            <p className="text-gray-500">暂无模板</p>
+            <p className="text-sm text-gray-400 mt-2">请上传新模板</p>
+          </div>
+        ) : (
+          templates.map((template) => (
+            <TemplateItem
+              key={template.id}
+              template={template}
+              onDelete={handleDeleteTemplate}
+              onSelect={handleSelectTemplate}
+              isSelected={selectedTemplateId === template.id}
+            />
+          ))
+        )}
       </div>
     </div>
   );

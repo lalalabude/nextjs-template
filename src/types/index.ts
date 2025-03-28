@@ -1,3 +1,12 @@
+import { ITable } from '@lark-base-open/js-sdk';
+
+// 扩展ITable接口
+declare module '@lark-base-open/js-sdk' {
+  interface ITable {
+    onSelectionChange(callback: (selection: any) => void): Promise<() => void>;
+  }
+}
+
 // 文件模板类型
 export type TemplateType = 'docx' | 'xlsx';
 
@@ -55,6 +64,6 @@ export interface TemplateRecord {
   name: string;
   file_url: string;
   file_type: TemplateType;
-  placeholders: string[];
+  placeholders?: string[];
   created_at: string;
 } 
