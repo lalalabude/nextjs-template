@@ -1,63 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase, uploadFile, testConnection } from '@/lib/supabase';
-import { v4 as uuidv4 } from 'uuid';
-import { TemplateRecord, TemplateType } from '@/types';
-import { extractPlaceholders } from '@/lib/template-processor';
+import { supabase } from '@/lib/supabase';
 
 // 获取模板列表
 export async function GET() {
   try {
-    console.log('正在获取模板列表...');
-    
-    // 测试数据库连接
-    const isConnected = await testConnection();
-    if (!isConnected) {
-      throw new Error('无法连接到Supabase数据库');
-    }
-    
-    // 从Supabase数据库查询模板列表
     const { data, error } = await supabase
       .from('templates')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Supabase查询错误:', error);
-      throw error;
-    }
-
-    console.log(`成功获取到 ${data ? data.length : 0} 个模板记录`);
-    
-    // 尝试直接从存储桶获取文件列表，以便调试
-    try {
-      const { data: storageData, error: storageError } = await supabase
-        .storage
-        .from('templates')
-        .list();
-        
-      if (storageError) {
-        console.error('获取存储桶文件列表失败:', storageError);
-      } else {
-        console.log(`存储桶中有 ${storageData.length} 个文件`);
-      }
-    } catch (storageListError) {
-      console.error('获取存储桶列表异常:', storageListError);
+      console.error('获取模板列表失败:', error);
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
-      templates: data || []
+      success: true,
+      templates: data,
     });
   } catch (error: any) {
-    console.error('获取模板列表失败:', error);
-    
-    // 返回更详细的错误信息
+    console.error('获取模板列表异常:', error);
     return NextResponse.json(
-      { 
-        error: `获取模板列表失败: ${error.message}`,
-        details: error.stack,
-        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ? '已配置' : '未配置',
-        supabaseKeyConfigured: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-      },
+      { success: false, error: error.message || '获取模板列表时发生未知错误' },
       { status: 500 }
     );
   }
@@ -67,81 +34,94 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const file = formData.get('file') as File;
+    
+    // 获取必要字段
     const name = formData.get('name') as string;
+    const file = formData.get('file') as File;
 
-    if (!file || !name) {
+    // 验证必要参数
+    if (!name) {
       return NextResponse.json(
-        { error: '缺少必要参数：file, name' },
+        { success: false, error: '缺少必要参数: name' },
         { status: 400 }
       );
     }
 
-    console.log(`正在上传模板: ${name}, 文件大小: ${file.size} 字节`);
-
-    // 确定文件类型
-    let fileType: TemplateType = 'docx';
-    if (file.name.toLowerCase().endsWith('.xlsx')) {
-      fileType = 'xlsx';
-    } else if (!file.name.toLowerCase().endsWith('.docx')) {
+    if (!file) {
       return NextResponse.json(
-        { error: '仅支持 .docx 和 .xlsx 文件格式' },
+        { success: false, error: '缺少必要参数: file' },
         { status: 400 }
       );
     }
 
-    // 上传文件到Supabase存储
-    console.log(`开始上传文件到 templates 存储桶...`);
-    const uploadResult = await uploadFile(file, 'templates');
-    console.log(`文件上传成功，路径: ${uploadResult.path}`);
-
-    // 从模板中提取占位符
-    let placeholders: string[] = [];
-    try {
-      // 暂时跳过占位符提取，避免Unicode错误
-      placeholders = [];
-    } catch (error) {
-      console.error('提取占位符失败:', error);
-      // 继续处理，即使占位符提取失败
+    // 获取文件类型
+    const fileExt = file.name.split('.').pop()?.toLowerCase();
+    if (!fileExt || !['docx', 'xlsx'].includes(fileExt)) {
+      return NextResponse.json(
+        { success: false, error: '不支持的文件类型，仅支持.docx和.xlsx文件' },
+        { status: 400 }
+      );
     }
 
-    // 在Supabase数据库中保存模板记录
-    const templateId = uuidv4();
-    console.log(`生成的模板ID: ${templateId}`);
+    const fileType = fileExt === 'docx' ? 'docx' : 'xlsx';
     
-    const templateData = {
-      id: templateId,
-      name,
-      file_url: uploadResult.fullPath,
-      file_type: fileType,
-      placeholders,
-      created_at: new Date().toISOString()
-    };
-    
-    console.log('准备插入模板记录:', templateData);
-    
-    const { error } = await supabase
+    // 上传文件到Supabase
+    const fileName = `${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+    const { data: uploadData, error: uploadError } = await supabase.storage
       .from('templates')
-      .insert(templateData);
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: false
+      });
 
-    if (error) {
-      console.error('插入模板记录失败:', error);
-      throw error;
+    if (uploadError) {
+      console.error('上传模板文件失败:', uploadError);
+      return NextResponse.json(
+        { success: false, error: uploadError.message },
+        { status: 500 }
+      );
     }
 
-    console.log('模板记录插入成功');
+    // 获取公共URL
+    const { data: urlData } = supabase.storage
+      .from('templates')
+      .getPublicUrl(fileName);
+
+    if (!urlData || !urlData.publicUrl) {
+      return NextResponse.json(
+        { success: false, error: '获取模板URL失败' },
+        { status: 500 }
+      );
+    }
+
+    // 创建模板记录
+    const { data: templateData, error: templateError } = await supabase
+      .from('templates')
+      .insert([
+        {
+          name,
+          file_url: urlData.publicUrl,
+          file_type: fileType,
+        }
+      ])
+      .select();
+
+    if (templateError) {
+      console.error('创建模板记录失败:', templateError);
+      return NextResponse.json(
+        { success: false, error: templateError.message },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      template: templateData
+      template: templateData[0],
     });
   } catch (error: any) {
-    console.error('上传模板失败:', error);
+    console.error('处理模板上传请求失败:', error);
     return NextResponse.json(
-      { 
-        error: `上传模板失败: ${error.message}`,
-        details: error.stack
-      },
+      { success: false, error: error.message || '处理模板上传请求时发生未知错误' },
       { status: 500 }
     );
   }

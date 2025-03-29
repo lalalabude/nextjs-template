@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import TemplateUploader from '@/components/TemplateUploader';
 import TemplateList from '@/components/TemplateList';
 import DocumentGenerator from '@/components/DocumentGenerator';
@@ -8,10 +8,42 @@ import { TemplateRecord } from '@/types';
 
 export default function Home() {
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateRecord | null>(null);
+  const [selectedTemplates, setSelectedTemplates] = useState<TemplateRecord[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // 当单个模板选择变化时，同时更新多选列表
+  useEffect(() => {
+    if (selectedTemplate) {
+      if (!selectedTemplates.some(t => t.id === selectedTemplate.id)) {
+        setSelectedTemplates([selectedTemplate]);
+      }
+    }
+  }, [selectedTemplate]);
+
+  // 当多选列表变化时，更新单选模板（使用第一个模板）
+  useEffect(() => {
+    if (selectedTemplates.length > 0) {
+      setSelectedTemplate(selectedTemplates[0]);
+    } else {
+      setSelectedTemplate(null);
+    }
+  }, [selectedTemplates]);
+
+  const handleTemplateMultiSelect = (template: TemplateRecord, isSelected: boolean) => {
+    if (isSelected) {
+      if (!selectedTemplates.some(t => t.id === template.id)) {
+        setSelectedTemplates([...selectedTemplates, template]);
+      }
+    } else {
+      setSelectedTemplates(selectedTemplates.filter(t => t.id !== template.id));
+    }
+  };
 
   const handleUploadSuccess = (template: TemplateRecord) => {
     setSelectedTemplate(template);
+    if (!selectedTemplates.some(t => t.id === template.id)) {
+      setSelectedTemplates([...selectedTemplates, template]);
+    }
     setRefreshKey(prevKey => prevKey + 1);
   };
 
@@ -39,46 +71,24 @@ export default function Home() {
                 <TemplateList
                   key={refreshKey}
                   selectedTemplateId={selectedTemplate?.id || null}
+                  selectedTemplateIds={selectedTemplates.map(t => t.id)}
                   onSelectTemplate={setSelectedTemplate}
+                  onSelectTemplates={handleTemplateMultiSelect}
+                  isMultiSelectMode={true}
                   onRefresh={handleRefresh}
+                  refreshInterval={0}
                 />
               </div>
             </div>
             
             {/* 右侧栏：生成文档 */}
             <div className="md:col-span-2">
-              <DocumentGenerator selectedTemplate={selectedTemplate} />
-              
-              {/* 使用说明 */}
-              <div className="mt-6 bg-white p-6 rounded-lg shadow-md">
-                <h2 className="text-xl font-semibold mb-4">使用说明</h2>
-                <div className="prose prose-blue">
-                  <h3>功能介绍</h3>
-                  <p>
-                    飞书多维表格文档生成器是一款应用于飞书多维表格的插件，可以基于上传的文档模板生成定制化文档。
-                  </p>
-                  
-                  <h3>操作步骤</h3>
-                  <ol>
-                    <li>上传Word或Excel模板文件，模板中使用 {'{字段名}'} 格式作为占位符</li>
-                    <li>在多维表格中选择一条或多条记录</li>
-                    <li>选择一个已上传的模板，点击"生成文档"按钮</li>
-                    <li>系统将根据所选记录的字段值，替换模板中的占位符</li>
-                    <li>生成的文档将自动添加到记录的"文档链接"字段中</li>
-                  </ol>
-                  
-                  <h3>占位符说明</h3>
-                  <p>
-                    占位符使用 {'{字段名}'} 格式，其中"字段名"必须与多维表格中的字段名称完全一致。例如，如果多维表格中有一个名为"客户名称"的字段，则在模板中使用 {'{客户名称}'} 作为占位符。
-                  </p>
-                  
-                  <h3>支持的文件格式</h3>
-                  <ul>
-                    <li>Word文档 (.docx)</li>
-                    <li>Excel表格 (.xlsx)</li>
-                  </ul>
-                </div>
-              </div>
+              <DocumentGenerator 
+                selectedTemplate={selectedTemplate}
+                selectedTemplates={selectedTemplates}
+                appId={process.env.NEXT_PUBLIC_LARK_APP_ID} 
+                tableId={process.env.NEXT_PUBLIC_LARK_TABLE_ID}
+              />
             </div>
           </div>
         </div>
