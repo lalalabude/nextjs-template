@@ -1,26 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Template, TemplateType, TemplateRecord } from '@/types';
+import { TemplateRecord } from '@/types';
+import { apiClient } from '@/lib/api-client';
 
 // 组件属性接口
 interface TemplateListProps {
-  selectedTemplateId: string | null;
-  selectedTemplateIds?: string[];
-  onSelectTemplate: (template: TemplateRecord) => void;
-  onSelectTemplates?: (template: TemplateRecord, isSelected: boolean) => void;
-  isMultiSelectMode?: boolean;
+  selectedTemplateIds: string[];
+  onSelectTemplates: (template: TemplateRecord, isSelected: boolean) => void;
   onRefresh?: () => void;
-  refreshInterval?: number;
   className?: string;
 }
 
 export default function TemplateList({ 
-  selectedTemplateId, 
   selectedTemplateIds = [],
-  onSelectTemplate,
   onSelectTemplates,
-  isMultiSelectMode = false,
   onRefresh,
-  refreshInterval = 0,
   className = ''
 }: TemplateListProps) {
   // 状态管理
@@ -28,37 +21,40 @@ export default function TemplateList({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showConfirmDelete, setShowConfirmDelete] = useState<string | null>(null);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadName, setUploadName] = useState('');
+  const [uploadDescription, setUploadDescription] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
-      console.log('获取模板列表...');
       
-      const response = await fetch('/api/templates');
-      if (!response.ok) {
-        throw new Error('获取模板列表失败');
+      const response = await apiClient.get('/api/templates');
+      
+      if (!response) {
+        throw new Error('API返回空响应');
       }
       
-      const data = await response.json();
-      console.log('API返回数据:', data);
-      
-      // 检查返回的数据格式
-      if (data.templates && Array.isArray(data.templates)) {
-        console.log('模板列表获取成功:', data.templates.length);
-        setTemplates(data.templates);
-      } else if (Array.isArray(data)) {
-        // 兼容旧格式，直接返回数组
-        console.log('模板列表获取成功(兼容模式):', data.length);
-        setTemplates(data);
+      if (Array.isArray(response)) {
+        setTemplates(response);
+      } else if (response && typeof response === 'object') {
+        if ('data' in response && Array.isArray(response.data)) {
+          setTemplates(response.data);
+        } else if ('templates' in response && Array.isArray(response.templates)) {
+          setTemplates(response.templates);
+        } else if ('records' in response && Array.isArray(response.records)) {
+          setTemplates(response.records);
+        } else {
+          throw new Error('API返回的数据格式不正确');
+        }
       } else {
-        console.error('API返回的数据格式不正确:', data);
-        setTemplates([]);
-        setError('获取模板列表失败：数据格式不正确');
+        throw new Error('API返回的数据格式不正确');
       }
-    } catch (error: any) {
-      console.error('获取模板失败:', error);
-      setError(error.message || '获取模板列表时出错');
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '获取模板列表时出错');
       setTemplates([]);
     } finally {
       setIsLoading(false);
@@ -70,72 +66,75 @@ export default function TemplateList({
     fetchTemplates();
   }, [fetchTemplates]);
 
-  // 设置定时刷新
-  useEffect(() => {
-    if (refreshInterval > 0) {
-      console.log(`设置模板列表刷新间隔: ${refreshInterval}秒`);
-      const refreshTimer = setInterval(fetchTemplates, refreshInterval * 1000);
-      return () => clearInterval(refreshTimer);
-    }
-  }, [refreshInterval, fetchTemplates]);
-
   const handleDeleteTemplate = async (templateId: string) => {
     try {
-      console.log(`删除模板: ${templateId}`);
       setShowConfirmDelete(null);
+      await apiClient.delete(`/api/templates/${templateId}`);
       
-      const response = await fetch(`/api/templates/${templateId}`, {
-        method: 'DELETE'
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || '删除模板失败');
+      if (selectedTemplateIds.includes(templateId)) {
+        onSelectTemplates(null as any, false);
       }
       
-      // 刷新模板列表
-      console.log('删除成功，刷新模板列表');
       fetchTemplates();
-      
-      // 如果选中的模板被删除，清除选择
-      if (selectedTemplateId === templateId && onSelectTemplate) {
-        onSelectTemplate(null as any);
-      }
-      
-      // 触发外部刷新回调
-      if (typeof onRefresh === 'function') {
-        onRefresh();
-      }
-    } catch (error: any) {
-      console.error('删除模板失败:', error);
-      setError(error.message || '删除模板时出错');
+      onRefresh?.();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '删除模板失败');
     }
   };
 
-  const handleSelectTemplate = (template: TemplateRecord) => {
-    console.log(`选择模板: ${template.id} - ${template.name}`);
-    
-    if (isMultiSelectMode && onSelectTemplates) {
-      // 多选模式处理
-      const isSelected = selectedTemplateIds.includes(template.id);
-      onSelectTemplates(template, !isSelected);
-    } else {
-      // 单选模式处理
-      onSelectTemplate(template);
+  const handleTemplateClick = (template: TemplateRecord) => {
+    const isSelected = selectedTemplateIds.includes(template.id);
+    onSelectTemplates(template, !isSelected);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setUploadFile(file);
+      // 如果没有设置名称，使用文件名（不含扩展名）作为默认名称
+      if (!uploadName) {
+        const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '');
+        setUploadName(nameWithoutExt);
+      }
     }
   };
 
-  // 检查模板是否被选中
-  const isTemplateSelected = (templateId: string) => {
-    if (isMultiSelectMode) {
-      return selectedTemplateIds.includes(templateId);
-    } else {
-      return selectedTemplateId === templateId;
+  const handleUpload = async () => {
+    if (!uploadFile || !uploadName) {
+      setError('请选择文件并输入模板名称');
+      return;
+    }
+
+    try {
+      setIsUploading(true);
+      setError(null);
+
+      const formData = new FormData();
+      formData.append('file', uploadFile);
+      formData.append('name', uploadName);
+      formData.append('description', uploadDescription);
+
+      await apiClient.post('/api/templates', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      setShowUploadDialog(false);
+      setUploadFile(null);
+      setUploadName('');
+      setUploadDescription('');
+      fetchTemplates();
+      onRefresh?.();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '上传模板失败');
+    } finally {
+      setIsUploading(false);
     }
   };
 
   // 获取文件类型标签
-  const getFileTypeLabel = (type: TemplateType) => {
+  const getFileTypeLabel = (type: string) => {
     switch (type) {
       case 'docx':
         return 'Word 文档';
@@ -159,118 +158,173 @@ export default function TemplateList({
     });
   };
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center p-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-4 bg-red-50 text-red-700 rounded-md">
+        <div className="font-medium">错误</div>
+        <div className="text-sm">{error}</div>
+      </div>
+    );
+  }
+
   return (
-    <div className={`template-list ${className}`}>
-      <div className="p-4 bg-white shadow rounded-lg">
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold">模板库</h3>
-          <div className="flex items-center">
-            {isMultiSelectMode && (
-              <span className="mr-2 text-xs text-blue-600">
-                已选择 {selectedTemplateIds.length} 个模板
-              </span>
-            )}
-            <button 
-              onClick={fetchTemplates}
-              className="px-3 py-1 text-sm border border-gray-300 rounded-md bg-white hover:bg-gray-50 focus:outline-none"
+    <div className={`space-y-4 ${className}`}>
+      {/* 上传按钮 */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => setShowUploadDialog(true)}
+          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+        >
+          上传模板
+        </button>
+      </div>
+
+      {templates.length === 0 ? (
+        <div className="text-center text-gray-500 py-4">
+          暂无可用模板
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {templates.map(template => (
+            <div
+              key={template.id}
+              className={`p-4 border rounded-lg cursor-pointer transition-colors ${
+                selectedTemplateIds.includes(template.id)
+                  ? 'border-blue-500 bg-blue-50'
+                  : 'border-gray-200 hover:border-blue-300'
+              }`}
+              onClick={() => handleTemplateClick(template)}
             >
-              刷新
-            </button>
+              <div className="flex justify-between items-start">
+                <div>
+                  <h3 className="font-medium text-gray-900">{template.name}</h3>
+                  <p className="text-sm text-gray-500 mt-1">
+                    {template.description || '暂无描述'}
+                  </p>
+                </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowConfirmDelete(template.id);
+                  }}
+                  className="text-red-600 hover:text-red-800"
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 删除确认对话框 */}
+      {showConfirmDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-lg max-w-sm w-full">
+            <h3 className="text-lg font-medium mb-4">确认删除</h3>
+            <p className="text-gray-600 mb-4">
+              确定要删除这个模板吗？此操作不可撤销。
+            </p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={() => setShowConfirmDelete(null)}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => handleDeleteTemplate(showConfirmDelete)}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                删除
+              </button>
+            </div>
           </div>
         </div>
+      )}
 
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-600">
-            {error}
-          </div>
-        )}
-
-        {isLoading ? (
-          <div className="flex justify-center items-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-          </div>
-        ) : templates.length === 0 ? (
-          <div className="py-6 text-center text-gray-500 bg-gray-50 rounded-md">
-            暂无模板，请上传新模板
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {templates.map(template => (
-              <div 
-                key={template.id}
-                className={`p-3 border rounded-md cursor-pointer transition-colors ${
-                  isTemplateSelected(template.id)
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-200 hover:bg-gray-50'
-                }`}
-                onClick={() => handleSelectTemplate(template)}
-              >
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center">
-                    {isMultiSelectMode && (
-                      <div className="mr-2">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedTemplateIds.includes(template.id)}
-                          onChange={() => handleSelectTemplate(template)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="h-4 w-4 text-blue-600 rounded border-gray-300"
-                        />
-                      </div>
-                    )}
-                    <div>
-                      <h4 className="font-medium text-gray-900">{template.name}</h4>
-                      <div className="mt-1 flex items-center space-x-2 text-xs text-gray-500">
-                        <span className={`px-1.5 py-0.5 rounded ${
-                          template.file_type === 'docx' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'
-                        }`}>
-                          {getFileTypeLabel(template.file_type)}
-                        </span>
-                        <span>上传时间: {formatDate(template.created_at)}</span>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {showConfirmDelete === template.id ? (
-                    <div className="flex items-center space-x-1">
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteTemplate(template.id);
-                        }}
-                        className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
-                      >
-                        确认
-                      </button>
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowConfirmDelete(null);
-                        }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded"
-                      >
-                        取消
-                      </button>
-                    </div>
-                  ) : (
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowConfirmDelete(template.id);
-                      }}
-                      className="p-1 text-gray-400 hover:text-red-500"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
+      {/* 上传对话框 */}
+      {showUploadDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          <div className="bg-white p-6 rounded-lg max-w-md w-full">
+            <h3 className="text-lg font-medium mb-4">上传模板</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  选择文件
+                </label>
+                <input
+                  type="file"
+                  accept=".docx,.xlsx"
+                  onChange={handleFileChange}
+                  className="w-full text-sm text-gray-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-md file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-blue-50 file:text-blue-700
+                    hover:file:bg-blue-100"
+                />
+                {uploadFile && (
+                  <p className="mt-1 text-sm text-gray-500">
+                    已选择: {uploadFile.name}
+                  </p>
+                )}
               </div>
-            ))}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  模板名称
+                </label>
+                <input
+                  type="text"
+                  value={uploadName}
+                  onChange={(e) => setUploadName(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="请输入模板名称"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  模板描述
+                </label>
+                <textarea
+                  value={uploadDescription}
+                  onChange={(e) => setUploadDescription(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  rows={3}
+                  placeholder="请输入模板描述（可选）"
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end space-x-3">
+              <button
+                onClick={() => setShowUploadDialog(false)}
+                className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleUpload}
+                disabled={isUploading}
+                className={`px-4 py-2 rounded ${
+                  isUploading
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                {isUploading ? '上传中...' : '上传'}
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 } 

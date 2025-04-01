@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { TemplateRecord } from '@/types';
 import { bitable } from '@lark-base-open/js-sdk';
+import { apiClient } from '@/lib/api-client';
 
 // 根据飞书官方文档更新Selection接口
 interface BaseSelection {
@@ -30,19 +31,17 @@ interface SelectionEventContext {
 }
 
 export default function DocumentGenerator({
-  templates,
   appId: propAppId = '',
   tableId: propTableId = '',
   setGenStatus,
-  selectedTemplate,
-  selectedTemplates = []
+  selectedTemplates = [],
+  apiKey = ''
 }: {
-  templates?: Array<{ id: string; name: string }>;
   appId?: string;
   tableId?: string;
   setGenStatus?: (status: string) => void;
-  selectedTemplate?: TemplateRecord | null;
   selectedTemplates?: TemplateRecord[];
+  apiKey?: string;
 }) {
   // 状态
   const [loading, setLoading] = useState(false);
@@ -55,57 +54,6 @@ export default function DocumentGenerator({
   const [currentTableId, setCurrentTableId] = useState<string>('');
   const [currentAppId, setCurrentAppId] = useState<string>('');
 
-  // 初始化飞书SDK
-  useEffect(() => {
-    async function initSDK() {
-      try {
-        // 检查直接导入的bitable API是否存在
-        if (typeof bitable !== 'undefined') {
-          console.log('飞书SDK已导入');
-          setIsSDKReady(true);
-          
-          // 尝试获取当前表格ID
-          try {
-            // 通过any类型跳过类型检查，因为SDK类型定义不完整
-            const meta = await (bitable.base as any).getTableMetaList();
-            if (meta && Array.isArray(meta) && meta.length > 0) {
-              // 获取当前活动表格的ID
-              const activeTable = meta.find(table => table.active === true || table.primary === true);
-              if (activeTable && activeTable.id) {
-                console.log('获取到当前表格ID:', activeTable.id);
-                setCurrentTableId(activeTable.id);
-              } else if (meta[0].id) {
-                // 如果没有active标记，使用第一个表格
-                console.log('使用第一个表格ID:', meta[0].id);
-                setCurrentTableId(meta[0].id);
-              }
-            }
-            
-            // 尝试获取应用ID
-            try {
-              // 通过any类型跳过类型检查
-              const appInfo = await (bitable.base as any).getAppInfo();
-              if (appInfo && appInfo.appId) {
-                console.log('获取到当前应用ID:', appInfo.appId);
-                setCurrentAppId(appInfo.appId);
-              }
-            } catch (err) {
-              console.warn('获取应用ID失败:', err);
-            }
-          } catch (err) {
-            console.warn('获取表格元数据失败:', err);
-          }
-        } else {
-          console.log('未找到飞书SDK，可能不在飞书环境中运行');
-        }
-      } catch (err) {
-        console.log('初始化飞书SDK时出错:', err);
-      }
-    }
-
-    initSDK();
-  }, []);
-
   // 根据props更新已选择的模板
   useEffect(() => {
     const templateNames: string[] = [];
@@ -117,12 +65,10 @@ export default function DocumentGenerator({
           templateNames.push(t.name);
         }
       });
-    } else if (selectedTemplate && selectedTemplate.name) {
-      templateNames.push(selectedTemplate.name);
     }
     
     setSelectedTemplateNames(templateNames);
-  }, [selectedTemplate, selectedTemplates]);
+  }, [selectedTemplates]);
 
   // 刷新选中记录 - 根据飞书官方API正确使用
   const refreshSelectedRecords = useCallback(async () => {
@@ -254,120 +200,120 @@ export default function DocumentGenerator({
     };
   }, [isSDKReady, refreshSelectedRecords]);
 
+  // 监听选择变化
+  useEffect(() => {
+    if (!isSDKReady) return;
+
+    const handleSelectionChange = (event: any) => {
+      try {
+        console.log('选择变化事件:', event);
+        
+        // 获取选中的记录ID
+        const selectedRecordIds = event.recordIds || [];
+        console.log('选中的记录ID:', selectedRecordIds);
+        
+        // 更新状态
+        setRecordIds(selectedRecordIds);
+        
+        // 更新进度状态
+        setProgressStatus({
+          current: 0,
+          total: selectedRecordIds.length
+        });
+        
+        // 更新选中的模板名称
+        if (selectedTemplates.length > 0) {
+          setSelectedTemplateNames(selectedTemplates.map(t => t.name));
+        } else {
+          setSelectedTemplateNames([]);
+        }
+        
+        // 更新生成状态
+        if (setGenStatus) {
+          if (selectedRecordIds.length > 0) {
+            setGenStatus(`已选择 ${selectedRecordIds.length} 条记录`);
+          } else {
+            setGenStatus('请选择要生成文档的记录');
+          }
+        }
+      } catch (error) {
+        console.error('处理选择变化事件失败:', error);
+        if (setGenStatus) {
+          setGenStatus('处理选择变化事件失败');
+        }
+      }
+    };
+
+    // 注册选择变化事件监听器
+    bitable.base.onSelectionChange(handleSelectionChange);
+
+    // 清理函数
+    return () => {
+      // 由于飞书SDK没有提供offSelectionChange方法，我们在这里不做清理
+      // 这不会造成内存泄漏，因为组件卸载时事件监听器会自动被清理
+    };
+  }, [isSDKReady, selectedTemplates, setGenStatus]);
+
   // 生成文档
   const handleGenerateDocument = async () => {
-    if (!selectedTemplateNames.length) {
-      setError('请选择至少一个模板');
-      return;
-    }
-
-    if (!recordIds.length) {
-      setError('请至少选择一条记录');
-      return;
-    }
-
     try {
       setLoading(true);
       setError(null);
       setSuccess(null);
-      setProgressStatus({ current: 0, total: recordIds.length || 1 });
 
-      if (setGenStatus) {
-        setGenStatus('开始生成文档...');
+      // 验证必要参数
+      if (!recordIds.length) {
+        throw new Error('请先选择要生成文档的记录');
       }
 
-      // 获取有效的AppId
-      // 优先级: props传入 > SDK获取 > 环境变量 > 开发模式默认值
-      let effectiveAppId = propAppId || currentAppId || process.env.NEXT_PUBLIC_LARK_APP_ID || '';
-      
-      // 开发模式下使用默认值
-      if (!effectiveAppId && process.env.NODE_ENV === 'development') {
-        console.log('开发模式: 使用默认AppId');
-        effectiveAppId = 'dev_app_id_12345';
-      }
-      
-      // 获取有效的TableId
-      // 优先级: props传入 > SDK获取 > 环境变量 > 开发模式默认值
-      let effectiveTableId = propTableId || currentTableId || process.env.NEXT_PUBLIC_LARK_TABLE_ID || '';
-      
-      // 开发模式下使用默认值
-      if (!effectiveTableId && process.env.NODE_ENV === 'development') {
-        console.log('开发模式: 使用默认TableId');
-        effectiveTableId = 'dev_table_id_12345';
+      if (selectedTemplates.length === 0) {
+        throw new Error('请先选择要使用的模板');
       }
 
-      // 确保所有必要参数都有值
-      if (!effectiveAppId) {
-        throw new Error('缺少必要参数: app_id');
-      }
+      // 使用环境变量中的应用ID，如果有的话
+      const effectiveAppId = process.env.NEXT_PUBLIC_LARK_APP_ID || propAppId || currentAppId;
+      const effectiveTableId = propTableId || currentTableId;
 
-      if (!effectiveTableId) {
-        throw new Error('缺少必要参数: table_id');
+      if (!effectiveAppId || !effectiveTableId) {
+        throw new Error('缺少必要的应用ID或表格ID');
       }
 
       // 准备请求数据
       const requestData = {
-        template_name: selectedTemplateNames.length === 1 ? selectedTemplateNames[0] : selectedTemplateNames,
+        template_name: selectedTemplates.map(t => t.name),
         app_id: effectiveAppId,
         table_id: effectiveTableId,
         record_ids: recordIds
       };
 
-      // 输出请求数据用于调试
-      console.log('发送请求数据:', JSON.stringify(requestData));
+      console.log('发送文档生成请求:', requestData);
 
-      // 调用API
-      const response = await fetch('/api/document/generate-from-records', {
-        method: 'POST',
+      // 使用apiClient发送请求
+      const response = await apiClient.post('/api/document/generate-from-records', requestData, {
         headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestData)
+          Authorization: `Bearer ${apiKey}`
+        }
       });
 
-      const result = await response.json();
+      console.log('文档生成响应:', response);
 
-      if (!result.success) {
-        throw new Error(result.error || '文档生成失败');
+      // 更新进度状态
+      setProgressStatus({
+        current: recordIds.length,
+        total: recordIds.length
+      });
+
+      // 显示成功消息
+      setSuccess(`成功处理 ${recordIds.length} 条记录`);
+      if (setGenStatus) {
+        setGenStatus(`成功处理 ${recordIds.length} 条记录`);
       }
-
-      // 更新进度和状态
-      setProgressStatus({ current: result.results.length, total: result.results.length });
-      
-      // 检查结果
-      const successCount = result.summary?.success || 0;
-      const failureCount = result.summary?.failure || 0;
-
-      let successMessage = '';
-      let errorMessage = '';
-
-      if (successCount > 0 && failureCount === 0) {
-        successMessage = `成功生成 ${successCount} 个文档`;
-      } else if (successCount > 0 && failureCount > 0) {
-        successMessage = `部分成功，已生成 ${successCount} 个文档，失败 ${failureCount} 个`;
-        errorMessage = '部分文档生成失败，请检查错误信息';
-      } else {
-        errorMessage = '所有文档生成失败';
-      }
-
-      if (successMessage) {
-        setSuccess(successMessage);
-        if (setGenStatus) {
-          setGenStatus(successMessage);
-        }
-      }
-
-      if (errorMessage) {
-        setError(errorMessage);
-        if (setGenStatus) {
-          setGenStatus(errorMessage);
-        }
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : '文档生成过程中发生未知错误';
+    } catch (error) {
+      console.error('生成文档失败:', error);
+      const errorMessage = error instanceof Error ? error.message : '生成文档时发生未知错误';
       setError(errorMessage);
       if (setGenStatus) {
-        setGenStatus(`错误: ${errorMessage}`);
+        setGenStatus(errorMessage);
       }
     } finally {
       setLoading(false);
@@ -376,6 +322,57 @@ export default function DocumentGenerator({
 
   // 检查生成按钮状态
   const isGenerateDisabled = loading || recordIds.length === 0 || selectedTemplateNames.length === 0;
+
+  // 初始化飞书SDK
+  useEffect(() => {
+    async function initSDK() {
+      try {
+        // 检查直接导入的bitable API是否存在
+        if (typeof bitable !== 'undefined') {
+          console.log('飞书SDK已导入');
+          setIsSDKReady(true);
+          
+          // 尝试获取当前表格ID
+          try {
+            // 通过any类型跳过类型检查，因为SDK类型定义不完整
+            const meta = await (bitable.base as any).getTableMetaList();
+            if (meta && Array.isArray(meta) && meta.length > 0) {
+              // 获取当前活动表格的ID
+              const activeTable = meta.find(table => table.active === true || table.primary === true);
+              if (activeTable && activeTable.id) {
+                console.log('获取到当前表格ID:', activeTable.id);
+                setCurrentTableId(activeTable.id);
+              } else if (meta[0].id) {
+                // 如果没有active标记，使用第一个表格
+                console.log('使用第一个表格ID:', meta[0].id);
+                setCurrentTableId(meta[0].id);
+              }
+            }
+            
+            // 尝试获取应用ID
+            try {
+              // 通过any类型跳过类型检查
+              const appInfo = await (bitable.base as any).getAppInfo();
+              if (appInfo && appInfo.appId) {
+                console.log('获取到当前应用ID:', appInfo.appId);
+                setCurrentAppId(appInfo.appId);
+              }
+            } catch (err) {
+              console.warn('获取应用ID失败:', err);
+            }
+          } catch (err) {
+            console.warn('获取表格元数据失败:', err);
+          }
+        } else {
+          console.log('未找到飞书SDK，可能不在飞书环境中运行');
+        }
+      } catch (error) {
+        console.error('初始化飞书SDK失败:', error);
+      }
+    }
+
+    initSDK();
+  }, []);
 
   return (
     <div className="bg-white p-6 rounded-lg shadow-md">
