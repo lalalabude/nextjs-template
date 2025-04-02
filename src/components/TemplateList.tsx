@@ -32,6 +32,7 @@ export default function TemplateList({
       setIsLoading(true);
       setError(null);
       
+      console.log('开始获取模板列表...');
       const response = await apiClient.get('/api/templates');
       
       if (!response) {
@@ -54,6 +55,7 @@ export default function TemplateList({
         throw new Error('API返回的数据格式不正确');
       }
     } catch (error) {
+      console.error('获取模板列表失败:', error);
       setError(error instanceof Error ? error.message : '获取模板列表时出错');
       setTemplates([]);
     } finally {
@@ -72,7 +74,11 @@ export default function TemplateList({
       await apiClient.delete(`/api/templates/${templateId}`);
       
       if (selectedTemplateIds.includes(templateId)) {
-        onSelectTemplates(null as any, false);
+        // 使用TemplateRecord类型而不是any
+        const template = templates.find(t => t.id === templateId);
+        if (template) {
+          onSelectTemplates(template, false);
+        }
       }
       
       fetchTemplates();
@@ -133,31 +139,6 @@ export default function TemplateList({
     }
   };
 
-  // 获取文件类型标签
-  const getFileTypeLabel = (type: string) => {
-    switch (type) {
-      case 'docx':
-        return 'Word 文档';
-      case 'xlsx':
-        return 'Excel 表格';
-      default:
-        return '未知格式';
-    }
-  };
-
-  // 格式化日期
-  const formatDate = (dateString: string) => {
-    if (!dateString) return '-';
-    const date = new Date(dateString);
-    return date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center p-4">
@@ -171,6 +152,12 @@ export default function TemplateList({
       <div className="p-4 bg-red-50 text-red-700 rounded-md">
         <div className="font-medium">错误</div>
         <div className="text-sm">{error}</div>
+        <button 
+          onClick={fetchTemplates}
+          className="mt-2 px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200"
+        >
+          重试
+        </button>
       </div>
     );
   }

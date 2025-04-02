@@ -3,7 +3,11 @@
  * 封装了API请求方法，自动添加认证头
  */
 
+// 检测是否在浏览器环境
+const isBrowser = typeof window !== 'undefined';
+
 // 从环境变量获取API基础URL和密钥
+// 如果没有设置NEXT_PUBLIC_API_BASE_URL，则使用空字符串，表示使用相对URL
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
 
@@ -18,6 +22,7 @@ interface ApiResponse<T = any> {
 interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
   params?: Record<string, string>;
   data?: unknown;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -41,7 +46,12 @@ class ApiError extends Error {
  * @returns 完整的API URL
  */
 function buildUrl(endpoint: string, params?: Record<string, string>): string {
-  const url = new URL(`${API_BASE_URL}${endpoint}`);
+  // 确保endpoint以/开头
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  
+  // 如果API_BASE_URL为空，使用相对URL
+  const baseUrl = API_BASE_URL || (isBrowser ? window.location.origin : '');
+  const url = new URL(path, baseUrl || 'http://placeholder');
   
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
@@ -49,6 +59,11 @@ function buildUrl(endpoint: string, params?: Record<string, string>): string {
         url.searchParams.append(key, value);
       }
     });
+  }
+  
+  // 如果baseUrl为空且在浏览器环境中，返回相对URL
+  if (!baseUrl && isBrowser) {
+    return url.pathname + url.search;
   }
   
   return url.toString();
@@ -64,7 +79,7 @@ async function fetchApi<T = unknown>(
   endpoint: string,
   options: ApiRequestOptions = {}
 ): Promise<T> {
-  const { params, data, headers, ...fetchOptions } = options;
+  const { params, data, headers = {}, ...fetchOptions } = options;
   const url = buildUrl(endpoint, params);
   
   // 默认请求选项
@@ -101,16 +116,28 @@ async function fetchApi<T = unknown>(
     
     // 检查响应状态
     if (!response.ok) {
-      const errorData = await response.json().catch(() => null);
-      throw new ApiError(
-        errorData?.error || `HTTP错误: ${response.status}`,
-        response.status,
-        errorData
-      );
+      let errorMessage = `HTTP错误: ${response.status}`;
+      let errorData = null;
+      
+      try {
+        errorData = await response.json();
+        if (errorData?.error) {
+          errorMessage = errorData.error;
+        }
+      } catch (e) {
+        // 如果无法解析JSON，使用响应文本
+        try {
+          errorMessage = await response.text() || errorMessage;
+        } catch (textError) {
+          // 如果也无法获取文本，使用默认错误消息
+        }
+      }
+      
+      throw new ApiError(errorMessage, response.status, errorData);
     }
     
     // 尝试解析响应数据
-    const responseData = await response.json();
+    const responseData = await response.json().catch(() => null);
     
     // 检查响应数据格式
     if (responseData === null || responseData === undefined) {

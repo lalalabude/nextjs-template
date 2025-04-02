@@ -103,12 +103,32 @@ export interface GenerateDocumentResponse {
   };
 }
 
-// 模板记录接口
+/**
+ * 模板记录接口
+ */
 export interface TemplateRecord {
   id: string;
   name: string;
-  file_url: string;
-  file_type: TemplateType;
-  placeholders: string[];
-  created_at: string;
+  type?: string;
+  description?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/**
+ * Lark/飞书记录接口
+ */
+export interface LarkRecord {
+  record_id: string;
+  fields: Record<string, any>;
+}
+
+/**
+ * API响应接口
+ */
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
 } 
