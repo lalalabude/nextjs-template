@@ -634,10 +634,13 @@ export const processXlsxTemplate = async (
     
     logger.info('成功解析Excel工作簿', { sheets: workbook.SheetNames });
 
-    // 遍历所有工作表
-    for (const sheetName of workbook.SheetNames) {
-      logger.debug(`处理工作表: ${sheetName}`);
-      const worksheet = workbook.Sheets[sheetName];
+    // 仅处理Sheet1工作表
+    const sheet1Name = 'Sheet1';
+    
+    // 检查是否存在Sheet1
+    if (workbook.SheetNames.includes(sheet1Name)) {
+      logger.debug(`处理工作表: ${sheet1Name}`);
+      const worksheet = workbook.Sheets[sheet1Name];
       
       // 获取工作表范围
       const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
@@ -692,6 +695,9 @@ export const processXlsxTemplate = async (
           }
         }
       }
+      logger.info(`完成工作表 ${sheet1Name} 的处理`);
+    } else {
+      logger.warn(`Excel模板中不存在 ${sheet1Name} 工作表，将不进行占位符替换`);
     }
     
     // 生成处理后的Excel文件

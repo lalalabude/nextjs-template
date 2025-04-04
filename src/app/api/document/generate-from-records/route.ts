@@ -250,8 +250,19 @@ async function saveDocumentToStorage(content: Blob, fileName: string): Promise<s
 }
 
 // 更新飞书记录，添加生成的文档URL
-async function updateRecordWithDocumentUrl(appId: string, tableId: string, recordId: string, documentUrl: string): Promise<boolean> {
+async function updateRecordWithDocumentUrl(
+  appId: string, 
+  tableId: string, 
+  recordId: string, 
+  documentUrl: string,
+  updateTableId?: string,
+  updateRecordId?: string
+): Promise<boolean> {
   try {
+    // 使用updateTableId和updateRecordId（如果提供），否则使用原始tableId和recordId
+    const effectiveTableId = updateTableId || tableId;
+    const effectiveRecordId = updateRecordId || recordId;
+    
     // 始终使用文档链接字段
     const fieldName = '文档链接';
     
@@ -259,11 +270,11 @@ async function updateRecordWithDocumentUrl(appId: string, tableId: string, recor
     fields[fieldName] = documentUrl;
     
     // 调用飞书API更新记录
-    await updateLarkRecord(appId, tableId, recordId, fields);
+    await updateLarkRecord(appId, effectiveTableId, effectiveRecordId, fields);
     
     return true;
   } catch (error) {
-    console.error(`更新记录 ${recordId} 失败:`, error);
+    console.error(`更新记录 ${updateRecordId || recordId} 失败:`, error);
     return false;
   }
 }
@@ -391,7 +402,14 @@ export async function POST(request: NextRequest) {
 
     // 获取请求体
     const body = await request.json();
-    const { template_name, app_id, table_id, record_ids } = body;
+    const { 
+      template_name, 
+      app_id, 
+      table_id, 
+      record_ids, 
+      update_tableID, 
+      update_recordID 
+    } = body;
 
     // 验证必要参数
     if (!template_name || !app_id || !table_id || !record_ids || record_ids.length === 0) {
@@ -478,11 +496,25 @@ export async function POST(request: NextRequest) {
         if (isMultiTemplate) {
           // 多模板处理 - 为每个记录创建一个ZIP文件
           console.log(`处理记录 ${record.record_id} 的多模板文档请求`);
-          return await processMultiTemplatesForRecord(templates, record, app_id, table_id);
+          return await processMultiTemplatesForRecord(
+            templates, 
+            record, 
+            app_id, 
+            table_id, 
+            update_tableID, 
+            update_recordID
+          );
         } else {
           // 单模板处理 - 为每个记录生成单个文档
           console.log(`处理记录 ${record.record_id} 的单模板文档请求`);
-          return await processSingleTemplateForRecord(templates[0], record, app_id, table_id);
+          return await processSingleTemplateForRecord(
+            templates[0], 
+            record, 
+            app_id, 
+            table_id, 
+            update_tableID, 
+            update_recordID
+          );
         }
       } catch (err) {
         console.error(`处理记录 ${record.record_id} 时发生未捕获错误:`, err);
@@ -528,7 +560,9 @@ async function processSingleTemplateForRecord(
   template: {id: string, name: string, file_url: string, file_type: TemplateType},
   record: any,
   appId: string,
-  tableId: string
+  tableId: string,
+  updateTableId?: string,
+  updateRecordId?: string
 ): Promise<any> {
   try {
     // 获取模板内容
@@ -606,7 +640,7 @@ async function processSingleTemplateForRecord(
     let updateSuccess;
     try {
       console.log(`开始更新记录 ${record.record_id} 的文档链接`);
-      updateSuccess = await updateRecordWithDocumentUrl(appId, tableId, record.record_id, documentUrl);
+      updateSuccess = await updateRecordWithDocumentUrl(appId, tableId, record.record_id, documentUrl, updateTableId, updateRecordId);
       console.log(`记录更新${updateSuccess ? '成功' : '失败'}`);
     } catch (error) {
       console.error(`更新记录失败: ${record.record_id}`, error);
@@ -639,7 +673,9 @@ async function processMultiTemplatesForRecord(
   templates: Array<{id: string, name: string, file_url: string, file_type: TemplateType}>,
   record: any,
   appId: string,
-  tableId: string
+  tableId: string,
+  updateTableId?: string,
+  updateRecordId?: string
 ): Promise<any> {
   try {
     console.log(`处理记录 ${record.record_id} 的 ${templates.length} 个模板`);
@@ -802,13 +838,12 @@ async function processMultiTemplatesForRecord(
       };
     }
     
-    // 更新飞书记录中的ZIP URL
+    // 更新飞书记录中的ZIP文件URL
     let updateSuccess;
     try {
-      updateSuccess = await updateRecordWithDocumentUrl(appId, tableId, record.record_id, zipUrl);
+      updateSuccess = await updateRecordWithDocumentUrl(appId, tableId, record.record_id, zipUrl, updateTableId, updateRecordId);
     } catch (error) {
       console.error(`更新记录失败: ${record.record_id}`, error);
-      // 虽然更新记录失败，但文件生成和上传已成功，所以仍返回成功
       updateSuccess = false;
     }
     
