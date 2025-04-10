@@ -589,6 +589,106 @@ export const processDocxTemplate = async (
 // 处理Excel模板的缓存
 const xlsxTemplateCache = new Map<string, any>();
 
+// 为Excel模板添加的特殊处理函数，保留数字类型
+function resolveFieldValueForExcel(fieldName: string, recordData: Record<string, any>, logger?: LogCollector): any {
+  // 查找优先级：精确匹配 > 文本格式 > 日期特殊格式 > 模糊匹配
+  
+  // 1. 精确匹配
+  if (recordData[fieldName] !== undefined) {
+    const value = recordData[fieldName];
+    logger?.debug(`精确匹配字段: ${fieldName}`);
+    
+    // 如果是数字类型，直接返回数字（除了时间戳）
+    if (typeof value === 'number') {
+      // 检查是否可能是时间戳
+      if (value > 1000000000000) {
+        const date = new Date(value);
+        if (!isNaN(date.getTime())) {
+          // 日期字段使用标准日期格式
+          if (fieldName.toLowerCase().includes('日期') || 
+              fieldName.toLowerCase().includes('date') || 
+              fieldName.toLowerCase().includes('time')) {
+            return date; // 返回日期对象，Excel会正确处理
+          }
+        }
+      }
+      return value; // 保持为数字类型
+    }
+    
+    // 如果是对象类型，尝试提取数字
+    if (typeof value === 'object' && value !== null) {
+      // 飞书标准字段格式 {type: number, value: any}
+      if ('type' in value && 'value' in value) {
+        const fieldType = value.type;
+        const fieldValue = value.value;
+        
+        // 数字类型 (type = 2)
+        if (fieldType === 2) {
+          const numValue = Number(fieldValue);
+          if (!isNaN(numValue)) {
+            return numValue; // 保持为数字类型
+          }
+        }
+      }
+      
+      // 通用对象，看是否有value属性为数字
+      if ('value' in value && typeof value.value === 'number') {
+        return value.value; // 保持为数字类型
+      }
+    }
+    
+    // 尝试从字符串转换为数字
+    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+      const numValue = Number(value.trim());
+      if (!isNaN(numValue)) {
+        return numValue; // 保持为数字类型
+      }
+    }
+    
+    // 其他情况使用通用格式化
+    return formatValueByType(value, fieldName);
+  }
+  
+  // 2. 文本格式 (_text) - Excel处理时通常不需要文本格式
+  
+  // 3. 日期特殊格式
+  if (fieldName.toLowerCase().includes('日期') || 
+      fieldName.toLowerCase().includes('date') || 
+      fieldName.toLowerCase().includes('time')) {
+    
+    // 标准日期格式
+    const formattedKey = `${fieldName}_formatted`;
+    if (recordData[formattedKey] !== undefined) {
+      logger?.debug(`匹配标准日期格式: ${formattedKey}`);
+      return recordData[formattedKey];
+    }
+  }
+  
+  // 4. 模糊匹配（忽略大小写）
+  const lowerFieldName = fieldName.toLowerCase();
+  const fieldKeys = Object.keys(recordData);
+  
+  // 最后尝试普通模糊匹配
+  const match = fieldKeys.find(key => 
+    key.toLowerCase() === lowerFieldName);
+  
+  if (match) {
+    logger?.debug(`普通模糊匹配: ${match}`);
+    const value = recordData[match];
+    
+    // 如果是数字类型，直接返回
+    if (typeof value === 'number') {
+      return value;
+    }
+    
+    return formatValueByType(value, match);
+  }
+  
+  logger?.debug(`未找到匹配: ${fieldName}`);
+  // 没有找到匹配，返回空字符串
+  return '';
+}
+
 // 处理Excel模板 - 核心处理函数
 export const processXlsxTemplate = async (
   templateArrayBuffer: ArrayBuffer,
@@ -660,30 +760,50 @@ export const processXlsxTemplate = async (
             // 使用正则表达式查找所有 {字段名} 格式的占位符
             const regex = /\{([^}]+)\}/g;
             let cellValue = cell.v;
+            let matches = cellValue.match(regex);
             
-            // 保存原始单元格值用于比较
-            const originalValue = cellValue;
-            
-            // 使用统一的占位符替换函数
-            const newValue = replaceAllPlaceholders(originalValue, processedRecord, logger);
-            
-            // 如果有替换，更新单元格值
-            if (newValue !== originalValue) {
-              logger.debug(`更新单元格 ${cellAddress}`, {
-                from: originalValue,
-                to: newValue
-              });
+            // 如果找到占位符
+            if (matches && matches.length > 0) {
+              // 保存原始单元格值
+              const originalValue = cellValue;
               
-              // 保留原始单元格格式
-              const newCell = { ...cell, v: newValue };
+              // 检查是否是单一占位符单元格（只有一个占位符且占据整个单元格）
+              const isSinglePlaceholder = matches.length === 1 && 
+                                          cellValue.trim() === matches[0];
               
-              // 如果是公式，更新公式结果但保留公式
-              if (cell.f) {
-                logger.debug(`保留公式: ${cell.f}`);
-                newCell.w = newValue; // 更新显示值
+              if (isSinglePlaceholder) {
+                // 提取占位符名称
+                const fieldName = matches[0].slice(1, -1);
+                // 获取值（可能保留数字类型）
+                const value = resolveFieldValueForExcel(fieldName, processedRecord, logger);
+                
+                // 使用原始值类型替换单元格
+                logger.debug(`单一占位符替换: ${cellAddress}`, {
+                  from: originalValue,
+                  to: value,
+                  type: typeof value
+                });
+                
+                // 更新单元格，保留原始值类型
+                worksheet[cellAddress] = {
+                  ...cell,
+                  v: value,
+                  t: typeof value === 'number' ? 'n' : typeof value === 'boolean' ? 'b' : 's'
+                };
+              } else {
+                // 复杂占位符（多个或与文本混合），使用文本替换
+                const newValue = replaceAllPlaceholders(originalValue, processedRecord, logger);
+                
+                if (newValue !== originalValue) {
+                  logger.debug(`复杂占位符替换: ${cellAddress}`, {
+                    from: originalValue,
+                    to: newValue
+                  });
+                  
+                  // 更新单元格
+                  worksheet[cellAddress] = { ...cell, v: newValue };
+                }
               }
-              
-              worksheet[cellAddress] = newCell;
             }
           }
           
