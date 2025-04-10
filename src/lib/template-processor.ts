@@ -61,9 +61,17 @@ export const extractPlaceholders = (content: string): string[] => {
 };
 
 // 格式化字段值 - 根据值类型进行格式化
-function formatValueByType(value: any, fieldName: string): string {
+function formatValueByType(value: any, fieldName: string): string | number {
   if (value === null || value === undefined) {
     return '';
+  }
+  
+  // 对"报名单位计数"字段特殊处理，保持数字类型
+  if (fieldName === "报名单位计数") {
+    const numValue = Number(value);
+    if (!isNaN(numValue)) {
+      return numValue; // 返回数字类型而非字符串
+    }
   }
   
   // 处理数字（包括可能的时间戳）
@@ -112,6 +120,14 @@ function formatValueByType(value: any, fieldName: string): string {
       
       // 处理数字类型 (type = 2)
       if (fieldType === 2) {
+        // 对"报名单位计数"字段特殊处理
+        if (fieldName === "报名单位计数") {
+          const numValue = Number(fieldValue);
+          if (!isNaN(numValue)) {
+            return numValue; // 返回数字类型
+          }
+        }
+        
         // 尝试将数字格式化为带有千位分隔符的货币格式
         try {
           const numValue = Number(fieldValue);
@@ -159,6 +175,14 @@ function formatValueByType(value: any, fieldName: string): string {
   
   // 字符串处理 - 可能是时间戳字符串
   if (typeof value === 'string') {
+    // 对"报名单位计数"字段特殊处理
+    if (fieldName === "报名单位计数" && /^\d+$/.test(value.trim())) {
+      const numValue = parseInt(value.trim(), 10);
+      if (!isNaN(numValue)) {
+        return numValue; // 返回数字类型
+      }
+    }
+    
     // 检查是否是纯数字字符串
     if (/^\d+$/.test(value.trim())) {
       const numValue = parseInt(value.trim(), 10);
@@ -190,42 +214,24 @@ function formatValueByType(value: any, fieldName: string): string {
 
 // 格式化字段值 - 兼容旧代码的接口
 export const formatFieldValue = (value: unknown): string => {
-  return formatValueByType(value, '');
+  return formatValueByType(value, '') as string;
 };
 
 // 统一的占位符解析函数
-function resolveFieldValue(fieldName: string, recordData: Record<string, any>, logger?: LogCollector): string | number {
-  // 特殊处理"报名单位计数"字段
-  const isSignupCountField = fieldName === '报名单位计数';
-  
+function resolveFieldValue(fieldName: string, recordData: Record<string, any>, logger?: LogCollector): string {
   // 查找优先级：精确匹配 > 文本格式 > 日期特殊格式 > 模糊匹配
   
   // 1. 精确匹配
   if (recordData[fieldName] !== undefined) {
     const value = recordData[fieldName];
     logger?.debug(`精确匹配字段: ${fieldName}`);
-    
-    // 对"报名单位计数"字段特殊处理
-    if (isSignupCountField && typeof value === 'number') {
-      logger?.debug(`返回"报名单位计数"数值: ${value}`);
-      return value; // 直接返回数值
-    }
-    
-    return formatValueByType(value, fieldName);
+    return formatValueByType(value, fieldName) as string;
   }
   
   // 2. 文本格式 (_text)
   const textKey = `${fieldName}_text`;
   if (recordData[textKey] !== undefined) {
     logger?.debug(`匹配文本格式: ${textKey}`);
-    
-    // 对"报名单位计数"字段特殊处理
-    if (isSignupCountField && !isNaN(Number(recordData[textKey]))) {
-      const numValue = Number(recordData[textKey]);
-      logger?.debug(`从文本格式返回"报名单位计数"数值: ${numValue}`);
-      return numValue;
-    }
-    
     return String(recordData[textKey]);
   }
   
@@ -285,14 +291,6 @@ function resolveFieldValue(fieldName: string, recordData: Record<string, any>, l
   
   if (textMatch) {
     logger?.debug(`模糊匹配文本字段: ${textMatch}`);
-    
-    // 对"报名单位计数"字段特殊处理
-    if (isSignupCountField && !isNaN(Number(recordData[textMatch]))) {
-      const numValue = Number(recordData[textMatch]);
-      logger?.debug(`从模糊匹配文本返回"报名单位计数"数值: ${numValue}`);
-      return numValue;
-    }
-    
     return String(recordData[textMatch]);
   }
   
@@ -302,14 +300,7 @@ function resolveFieldValue(fieldName: string, recordData: Record<string, any>, l
   
   if (match) {
     logger?.debug(`普通模糊匹配: ${match}`);
-    
-    // 对"报名单位计数"字段特殊处理
-    if (isSignupCountField && typeof recordData[match] === 'number') {
-      logger?.debug(`从普通模糊匹配返回"报名单位计数"数值: ${recordData[match]}`);
-      return recordData[match];
-    }
-    
-    return formatValueByType(recordData[match], match);
+    return formatValueByType(recordData[match], match) as string;
   }
   
   logger?.debug(`未找到匹配: ${fieldName}`);
@@ -318,13 +309,31 @@ function resolveFieldValue(fieldName: string, recordData: Record<string, any>, l
 }
 
 // 优化的占位符替换处理
-function replaceAllPlaceholders(template: string, recordData: Record<string, any>, logger?: LogCollector): string {
+function replaceAllPlaceholders(template: string, recordData: Record<string, any>, logger?: LogCollector): string | number {
   const placeholderRegex = /\{([^}]+)\}/g;
   
+  // 检查是否只有一个占位符，且整个模板就是这个占位符
+  if (template.trim().match(/^\{([^}]+)\}$/)) {
+    // 直接提取占位符名称
+    const fieldName = template.trim().substring(1, template.trim().length - 1);
+    
+    // 如果是"报名单位计数"字段，直接返回解析结果（可能是数字）
+    if (fieldName === "报名单位计数") {
+      const value = resolveFieldValue(fieldName, recordData, logger);
+      // 如果能转换为数字，则返回数字
+      if (typeof value === 'string') {
+        const numValue = Number(value);
+        if (!isNaN(numValue)) {
+          return numValue;
+        }
+      }
+      return value;
+    }
+  }
+  
+  // 一般情况下，进行字符串替换
   return template.replace(placeholderRegex, (_match, fieldName) => {
-    const result = resolveFieldValue(fieldName, recordData, logger);
-    // 确保返回字符串类型
-    return typeof result === 'string' ? result : String(result);
+    return String(resolveFieldValue(fieldName, recordData, logger));
   });
 }
 
@@ -389,7 +398,7 @@ function enhanceRecordData(record: LarkRecord | EnhancedLarkRecord | Record<stri
     
     // 为对象类型添加_text版本
     if (typeof value === 'object' && value !== null) {
-      result[`${key}_text`] = formatValueByType(value, key);
+      result[`${key}_text`] = formatValueByType(value, key) as string;
       logger?.debug(`添加字段文本版本: ${key}_text`);
     }
     
@@ -699,9 +708,6 @@ export const processXlsxTemplate = async (
             // 保存原始单元格值用于比较
             const originalValue = cellValue;
             
-            // 检查是否只包含"报名单位计数"占位符
-            const isSignupCountCell = originalValue === '{报名单位计数}';
-            
             // 使用统一的占位符替换函数
             const newValue = replaceAllPlaceholders(originalValue, processedRecord, logger);
             
@@ -712,26 +718,35 @@ export const processXlsxTemplate = async (
                 to: newValue
               });
               
-              // 创建新单元格
-              let newCell;
+              // 保留原始单元格格式
+              const newCell = { ...cell };
               
-              // 特殊处理"报名单位计数"字段，保持为数字类型
-              if (isSignupCountCell && !isNaN(Number(newValue))) {
-                newCell = { 
-                  ...cell,
-                  v: Number(newValue),
-                  t: 'n' // 设置为数字类型
-                };
-                logger.debug(`将"报名单位计数"字段转换为数字类型: ${Number(newValue)}`);
+              // 处理不同类型的返回值
+              if (typeof newValue === 'number') {
+                // 数字类型直接使用
+                newCell.v = newValue;
+                newCell.t = 'n'; // 设置单元格类型为数字
+                logger.debug(`单元格 ${cellAddress} 设置为数字类型: ${newValue}`);
+              } else if (originalValue.includes('{报名单位计数}')) {
+                // 特殊处理报名单位计数字段
+                const numValue = Number(newValue);
+                if (!isNaN(numValue)) {
+                  // 使用数字类型替代字符串
+                  newCell.v = numValue;
+                  newCell.t = 'n'; // 设置单元格类型为数字
+                  logger.debug(`报名单位计数字段转换为数字类型: ${numValue}`);
+                } else {
+                  newCell.v = newValue;
+                }
               } else {
-                // 其他字段正常处理
-                newCell = { ...cell, v: newValue };
+                // 其他情况使用字符串
+                newCell.v = newValue;
               }
               
               // 如果是公式，更新公式结果但保留公式
               if (cell.f) {
                 logger.debug(`保留公式: ${cell.f}`);
-                newCell.w = newValue; // 更新显示值
+                newCell.w = String(newValue); // 更新显示值
               }
               
               worksheet[cellAddress] = newCell;
