@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import * as ExcelJS from 'exceljs';
 import { Packer, Document, Paragraph, TextRun } from 'docx';
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
@@ -16,45 +17,55 @@ class LogCollector {
   }
 
   debug(message: string, data?: any) {
+    // 仅在调试模式开启时收集调试日志
     if (this.debugEnabled) {
       this.logs.push({level: 'debug', message, data});
     }
   }
 
   info(message: string, data?: any) {
-    this.logs.push({level: 'info', message, data});
+    // 精简信息日志，仅记录重要信息
+    if (message.includes('开始处理') || message.includes('处理完成')) {
+      this.logs.push({level: 'info', message, data});
+    }
   }
 
   warn(message: string, data?: any) {
+    // 收集警告日志
     this.logs.push({level: 'warn', message, data});
   }
 
   error(message: string, data?: any) {
-    this.logs.push({level: 'error', message, data});
     // 错误日志立即输出
+    this.logs.push({level: 'error', message, data});
     console.error(message, data);
   }
 
   flush() {
     if (this.logs.length === 0) return;
 
-    // 输出所有收集的日志
+    // 只输出警告和错误日志，减少控制台输出
     this.logs.forEach(log => {
-      if (log.level === 'debug' && this.debugEnabled) {
-        console.debug(log.message, log.data);
-      } else if (log.level === 'info') {
-        console.log(log.message, log.data);
+      if (log.level === 'error') {
+        // 错误已经实时输出了
       } else if (log.level === 'warn') {
         console.warn(log.message, log.data);
+      } else if (this.debugEnabled) {
+        // 调试模式时输出更多日志
+        if (log.level === 'debug') {
+          console.debug(log.message, log.data);
+        } else if (log.level === 'info') {
+          console.log(log.message, log.data);
+        }
       }
-      // 错误已经实时输出了
     });
     this.logs = [];
   }
 }
 
-// 提取占位符
+// 提取占位符 - 增加性能优化
 export const extractPlaceholders = (content: string): string[] => {
+  if (!content || typeof content !== 'string') return [];
   const regex = /\{([^}]+)\}/g;
   const matches = content.match(regex) || [];
   return matches.map(match => match.slice(1, -1));
@@ -494,46 +505,81 @@ export async function createErrorReportDoc(
   }
 }
 
-// 创建错误报告工作簿
+// 创建错误报告工作簿 - 使用ExcelJS
 export async function createErrorReportWorkbook(
   record: any,
   error: any,
   templateName: string
 ): Promise<Blob> {
   try {
-    // 创建新的工作簿
-    const workbook = XLSX.utils.book_new();
+    // 创建简洁的错误报告
+    const workbook = new ExcelJS.Workbook();
+    const ws = workbook.addWorksheet("错误报告");
     
-    // 创建错误报告数据
-    const wsData = [
-      ["错误报告"],
-      ["模板", templateName],
-      ["记录ID", getRecordId(record)],
-      ["时间", new Date().toISOString()],
-      [""],
-      ["错误信息"],
-      [error instanceof Error ? `${error.name}: ${error.message}` : String(error)]
-    ];
+    // 设置标题和内容
+    ws.getCell('A1').value = "错误报告";
+    ws.getCell('A1').font = { bold: true, size: 14 };
     
-    // 创建工作表并添加到工作簿
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    XLSX.utils.book_append_sheet(workbook, ws, "错误报告");
+    ws.getCell('A2').value = "模板";
+    ws.getCell('B2').value = templateName;
     
-    // 生成工作簿数据
-    const excelOutput = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    return new Blob([excelOutput], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  } catch (innerError) {
-    console.error('创建错误报告工作簿失败:', innerError);
-    // 创建简单的错误报告
+    ws.getCell('A3').value = "记录ID";
+    ws.getCell('B3').value = getRecordId(record);
+    
+    ws.getCell('A4').value = "时间";
+    ws.getCell('B4').value = new Date().toISOString();
+    
+    ws.getCell('A6').value = "错误信息";
+    ws.getCell('A6').font = { bold: true };
+    
+    const errorMessage = error instanceof Error ? 
+      `${error.name}: ${error.message}` : 
+      String(error);
+    ws.getCell('A7').value = errorMessage;
+    ws.getCell('A7').font = { color: { argb: 'FFFF0000' } };
+    
+    // 自动调整列宽
+    ws.getColumn('A').width = 15;
+    ws.getColumn('B').width = 50;
+    
+    // 生成文件
+    const buffer = await workbook.xlsx.writeBuffer();
+    return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  } catch {
+    // 创建最小的错误报告
     return new Blob(
-      [`错误报告\n\n模板: ${templateName}\n记录ID: ${getRecordId(record)}\n时间: ${new Date().toISOString()}\n\n错误信息:\n${error instanceof Error ? error.message : String(error)}`], 
+      [`错误报告\n模板: ${templateName}\n记录ID: ${getRecordId(record)}\n错误: ${error instanceof Error ? error.message : String(error)}`], 
       { type: 'text/plain' }
     );
   }
 }
 
+// 缓存管理 - 添加缓存大小限制，防止内存泄漏
+const MAX_CACHE_SIZE = 50; // 限制缓存项数量
+
 // 处理DocX模板的缓存
-const docxTemplateCache = new Map<string, any>();
+const docxTemplateCache = new Map<string, Blob>();
+function addToDocxCache(key: string, blob: Blob): void {
+  // 检查缓存是否达到大小限制
+  if (docxTemplateCache.size >= MAX_CACHE_SIZE) {
+    // 删除最早添加的项
+    const firstKey = docxTemplateCache.keys().next().value;
+    if (firstKey) docxTemplateCache.delete(firstKey);
+  }
+  docxTemplateCache.set(key, blob);
+}
+
+// 处理Excel模板的缓存
+const xlsxTemplateCache = new Map<string, Blob>();
+function addToXlsxCache(key: string, blob: Blob): void {
+  // 检查缓存是否达到大小限制
+  if (xlsxTemplateCache.size >= MAX_CACHE_SIZE) {
+    // 删除最早添加的项
+    const firstKey = xlsxTemplateCache.keys().next().value;
+    if (firstKey) xlsxTemplateCache.delete(firstKey);
+  }
+  xlsxTemplateCache.set(key, blob);
+}
 
 // 处理Word文档模板
 export const processDocxTemplate = async (
@@ -559,7 +605,7 @@ export const processDocxTemplate = async (
     // 检查缓存
     if (docxTemplateCache.has(cacheKey)) {
       logger.info('使用缓存的模板处理结果');
-      return docxTemplateCache.get(cacheKey);
+      return docxTemplateCache.get(cacheKey) as Blob;
     }
     
     // 创建一个空的PizZip实例
@@ -605,7 +651,7 @@ export const processDocxTemplate = async (
       
       // 缓存结果
       if (output.size > 0) {
-        docxTemplateCache.set(cacheKey, output);
+        addToDocxCache(cacheKey, output);
       }
       
       logger.info('Word模板处理成功', { size: output.size });
@@ -630,160 +676,127 @@ export const processDocxTemplate = async (
   }
 };
 
-// 处理Excel模板的缓存
-const xlsxTemplateCache = new Map<string, any>();
-
 // 处理Excel模板 - 核心处理函数
 export const processXlsxTemplate = async (
   templateArrayBuffer: ArrayBuffer,
   record: LarkRecord | Record<string, any>,
   templateName: string
 ): Promise<Blob> => {
-  const logger = new LogCollector(false);
-  logger.info('开始处理Excel模板:', templateName);
+  const logger = new LogCollector(false); // 关闭调试模式
+  logger.info('开始处理Excel模板');
   
   try {
     // 预处理记录数据
     const processedRecord = enhanceRecordData(record, logger);
-    logger.info('记录数据预处理完成', {
-      recordId: getRecordId(record),
-      fieldCount: Object.keys(processedRecord).length
-    });
     
-    // 计算缓存键 - 使用模板内容的哈希值确保不同模板有不同缓存键
+    // 计算缓存键
     const templateHash = await generateTemplateHash(templateArrayBuffer);
     const cacheKey = `${templateName}_${templateHash}_${getRecordId(record)}`;
     
     // 检查缓存
     if (xlsxTemplateCache.has(cacheKey)) {
-      logger.info('使用缓存的模板处理结果');
-      return xlsxTemplateCache.get(cacheKey);
+      return xlsxTemplateCache.get(cacheKey) as Blob;
     }
 
-    // 确保文件数据有效
+    // 检查文件数据有效性
     if (!templateArrayBuffer || templateArrayBuffer.byteLength === 0) {
-      logger.error('Excel模板文件为空或无法读取');
       throw new Error('Excel模板文件为空或无法读取');
     }
     
-    logger.info('已读取Excel模板文件', { size: templateArrayBuffer.byteLength });
-
-    // 使用xlsx解析工作簿
-    const workbook = XLSX.read(templateArrayBuffer, { type: 'array' });
+    // 使用ExcelJS读取工作簿
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(templateArrayBuffer);
     
-    if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
-      logger.error('无法解析Excel工作簿或工作簿不包含工作表');
+    if (!workbook || workbook.worksheets.length === 0) {
       throw new Error('无法解析Excel工作簿');
     }
     
-    logger.info('成功解析Excel工作簿', { sheets: workbook.SheetNames });
-
-    // 仅处理Sheet1工作表
+    // 查找Sheet1或第一个工作表
     const sheet1Name = 'Sheet1';
+    const worksheet = workbook.getWorksheet(sheet1Name) || workbook.worksheets[0];
     
-    // 检查是否存在Sheet1
-    if (workbook.SheetNames.includes(sheet1Name)) {
-      logger.debug(`处理工作表: ${sheet1Name}`);
-      const worksheet = workbook.Sheets[sheet1Name];
-      
-      // 获取工作表范围
-      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
-      
-      // 增量处理 - 批量处理单元格
-      const batchSize = 50; // 每批处理的单元格数量
+    if (worksheet) {
       let processedCells = 0;
       
-      for (let r = range.s.r; r <= range.e.r; r++) {
-        // 处理一行中的所有单元格
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const cellAddress = XLSX.utils.encode_cell({ r, c });
-          const cell = worksheet[cellAddress];
-          
-          // 如果单元格存在且包含值
-          if (cell && cell.v !== undefined && typeof cell.v === 'string') {
-            // 使用正则表达式查找所有 {字段名} 格式的占位符
-            const regex = /\{([^}]+)\}/g;
-            let cellValue = cell.v;
+      // 遍历所有包含文本的单元格，查找并替换占位符
+      worksheet.eachRow((row) => {
+        row.eachCell((cell) => {
+          try {
+            // 获取单元格的值
+            let cellValue: string | null = null;
             
-            // 保存原始单元格值用于比较
-            const originalValue = cellValue;
-            
-            // 使用统一的占位符替换函数
-            const newValue = replaceAllPlaceholders(originalValue, processedRecord, logger);
-            
-            // 如果有替换，更新单元格值
-            if (newValue !== originalValue) {
-              logger.debug(`更新单元格 ${cellAddress}`, {
-                from: originalValue,
-                to: newValue
-              });
-              
-              // 保留原始单元格格式
-              const newCell = { ...cell };
-              
-              // 处理不同类型的返回值
-              if (typeof newValue === 'number') {
-                // 数字类型直接使用
-                newCell.v = newValue;
-                newCell.t = 'n'; // 设置单元格类型为数字
-                logger.debug(`单元格 ${cellAddress} 设置为数字类型: ${newValue}`);
-              } else if (originalValue.includes('{报名单位计数}')) {
-                // 特殊处理报名单位计数字段
-                const numValue = Number(newValue);
-                if (!isNaN(numValue)) {
-                  // 使用数字类型替代字符串
-                  newCell.v = numValue;
-                  newCell.t = 'n'; // 设置单元格类型为数字
-                  logger.debug(`报名单位计数字段转换为数字类型: ${numValue}`);
-                } else {
-                  newCell.v = newValue;
+            // 处理公式单元格
+            if (cell.formula && cell.result && typeof cell.result === 'string') {
+              cellValue = cell.result;
+            } 
+            // 处理普通文本和富文本
+            else if (cell.value) {
+              if (typeof cell.value === 'string') {
+                cellValue = cell.value;
+              } else if (typeof cell.value === 'object' && cell.value !== null) {
+                // 处理富文本
+                const richTextValue = cell.value as any;
+                if (richTextValue.richText && Array.isArray(richTextValue.richText)) {
+                  cellValue = richTextValue.richText.map((rt: any) => rt.text || '').join('');
                 }
-              } else {
-                // 其他情况使用字符串
-                newCell.v = newValue;
               }
-              
-              // 如果是公式，更新公式结果但保留公式
-              if (cell.f) {
-                logger.debug(`保留公式: ${cell.f}`);
-                newCell.w = String(newValue); // 更新显示值
-              }
-              
-              worksheet[cellAddress] = newCell;
             }
-          }
-          
-          processedCells++;
-          
-          // 每处理一定数量的单元格，释放一次事件循环
-          if (processedCells % batchSize === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
-          }
-        }
-      }
-      logger.info(`完成工作表 ${sheet1Name} 的处理`);
-    } else {
-      logger.warn(`Excel模板中不存在 ${sheet1Name} 工作表，将不进行占位符替换`);
+            
+            // 检查是否有占位符并处理
+            if (cellValue && cellValue.includes('{') && cellValue.includes('}')) {
+              const newValue = replaceAllPlaceholders(cellValue, processedRecord, logger);
+              
+              // 如果有替换，更新单元格值
+              if (newValue !== cellValue) {
+                // 保存原始公式
+                const originalFormula = cell.formula;
+                const hasFormula = !!originalFormula;
+                
+                // 更新单元格值
+                if (typeof newValue === 'number') {
+                  cell.value = newValue; // 数字类型
+                } else if (cellValue.includes('{报名单位计数}')) {
+                  const numValue = Number(newValue);
+                  if (!isNaN(numValue)) {
+                    cell.value = numValue;
+                  } else {
+                    cell.value = newValue;
+                  }
+                } else {
+                  cell.value = newValue;
+                }
+                
+                // 记录公式到注释
+                if (hasFormula && !cell.note) {
+                  try {
+                    cell.note = `原公式: ${originalFormula}`;
+                  } catch (e) { /* 忽略注释添加失败 */ }
+                }
+                
+                processedCells++;
+              }
+            }
+          } catch (e) { /* 忽略单元格处理错误 */ }
+        });
+      });
+      
+      logger.info(`Excel模板处理完成，更新了 ${processedCells} 个单元格`);
     }
     
-    // 生成处理后的Excel文件
-    logger.info('生成处理后的Excel文件');
-    const excelOutput = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([excelOutput], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    // 生成Excel文件
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     
     // 缓存结果
     if (blob.size > 0) {
-      xlsxTemplateCache.set(cacheKey, blob);
+      addToXlsxCache(cacheKey, blob);
     }
     
-    logger.info('Excel模板处理成功', { size: blob.size });
     logger.flush();
     return blob;
   } catch (error: any) {
-    logger.error('处理Excel模板失败:', error);
+    logger.error('处理Excel模板失败', error);
     logger.flush();
-    
-    // 创建一个错误报告工作簿作为备用方案
     return createErrorReportWorkbook(record, error, templateName);
   }
 };
@@ -795,30 +808,20 @@ export const processXlsxTemplate = async (
  */
 async function generateTemplateHash(templateBuffer: ArrayBuffer): Promise<string> {
   try {
-    // 只使用模板的前100字节计算哈希，以提高性能
-    const sampleSize = Math.min(templateBuffer.byteLength, 100);
+    // 只使用文件头部来计算哈希，提高性能
+    const sampleSize = Math.min(templateBuffer.byteLength, 64);
     const sample = templateBuffer.slice(0, sampleSize);
-    
-    // 使用简单的哈希算法
     const dataView = new DataView(sample);
-    let hash = 0;
-    for (let i = 0; i < dataView.byteLength; i += 4) {
-      if (i + 4 <= dataView.byteLength) {
-        hash = (hash * 31) ^ dataView.getUint32(i, true);
-      } else {
-        // 处理剩余的不足4字节的数据
-        let remainingHash = 0;
-        for (let j = i; j < dataView.byteLength; j++) {
-          remainingHash = (remainingHash * 31) ^ dataView.getUint8(j);
-        }
-        hash = (hash * 31) ^ remainingHash;
-      }
+    
+    // 简化哈希计算
+    let hash = 5381;
+    for (let i = 0; i < dataView.byteLength; i++) {
+      hash = ((hash << 5) + hash) ^ dataView.getUint8(i); // djb2 算法变种
     }
     
-    return hash.toString(16);
-  } catch (error) {
-    console.error('生成模板哈希失败:', error);
-    // 如果哈希生成失败，使用时间戳作为备用
+    return Math.abs(hash).toString(16);
+  } catch {
+    // 如果计算失败，使用时间戳
     return Date.now().toString(16);
   }
 }
@@ -830,23 +833,14 @@ export async function processTemplate(
   record: EnhancedLarkRecord | LarkRecord | Record<string, any>,
   templateName?: string
 ): Promise<Blob> {
-  console.log(`开始处理模板，类型: ${templateType}, 记录ID: ${getRecordId(record)}`);
-  
   try {
     // 验证参数
     if (!templateArrayBuffer || templateArrayBuffer.byteLength === 0) {
-      console.error('模板内容为空');
       throw new Error('模板内容为空');
     }
     
-    if (!templateType) {
-      console.error('未指定模板类型');
-      throw new Error('未指定模板类型');
-    }
-    
-    if (!record) {
-      console.error('记录数据为空');
-      throw new Error('记录数据为空');
+    if (!templateType || !record) {
+      throw new Error('缺少必要参数');
     }
     
     // 确保模板名称存在
@@ -854,37 +848,24 @@ export async function processTemplate(
     
     // 根据模板类型选择不同的处理方法
     if (templateType === 'docx') {
-      try {
-        return await processDocxTemplate(templateArrayBuffer, record, effectiveTemplateName);
-      } catch (error) {
-        console.error(`处理Word文档模板失败:`, error);
-        // 生成错误报告文档
-        return await createErrorReportDoc(record, error, effectiveTemplateName);
-      }
+      return await processDocxTemplate(templateArrayBuffer, record, effectiveTemplateName);
     } else if (templateType === 'xlsx') {
-      try {
-        return await processXlsxTemplate(templateArrayBuffer, record, effectiveTemplateName);
-      } catch (error) {
-        console.error(`处理Excel表格模板失败:`, error);
-        // 生成错误报告电子表格
-        return await createErrorReportWorkbook(record, error, effectiveTemplateName);
-      }
+      return await processXlsxTemplate(templateArrayBuffer, record, effectiveTemplateName);
     } else {
-      const errorMessage = `不支持的模板类型: ${templateType}`;
-      console.error(errorMessage);
-      throw new Error(errorMessage);
+      throw new Error(`不支持的模板类型: ${templateType}`);
     }
   } catch (error) {
-    console.error(`处理模板时出现未捕获的错误:`, error);
-    // 这里是最后的错误处理，确保即使发生意外错误也能返回一个错误报告文档
+    console.error(`处理模板时出现错误:`, error);
+    
     try {
-      return await createErrorReportDoc(record, error, templateName || 'unknown');
-    } catch (finalError) {
-      console.error(`创建错误报告时也失败:`, finalError);
-      // 创建一个最小的错误文档作为最后的回退
-      const errorBlob = new Blob([`处理模板时出错: ${error instanceof Error ? error.message : String(error)}`], 
-        { type: 'text/plain' });
-      return errorBlob;
+      if (templateType === 'xlsx') {
+        return await createErrorReportWorkbook(record, error, templateName || 'unknown');
+      } else {
+        return await createErrorReportDoc(record, error, templateName || 'unknown');
+      }
+    } catch {
+      // 创建最小的错误文档作为最后的回退
+      return new Blob([`处理模板出错: ${error instanceof Error ? error.message : String(error)}`], { type: 'text/plain' });
     }
   }
 }
@@ -897,30 +878,15 @@ export const processTemplateFromFile = async (
   templateName: string
 ): Promise<Blob> => {
   const arrayBuffer = await templateFile.arrayBuffer();
-  // 放宽类型约束，接受LarkRecord或EnhancedLarkRecord
-  return processTemplate(arrayBuffer, templateType, record as (LarkRecord | Record<string, any>), templateName);
+  return processTemplate(arrayBuffer, templateType, record, templateName);
 };
 
-// 生成文件名 - 不使用中文字符，仅使用日期和ID
+// 生成文件名 - 简洁版
 export const generateFileName = (templateName: string, templateType: TemplateType): string => {
-  // 生成基于时间的ID，格式为yyyyMMdd_HHmmss
   const now = new Date();
-  const dateStr = now.getFullYear().toString() +
-                 (now.getMonth() + 1).toString().padStart(2, '0') +
-                 now.getDate().toString().padStart(2, '0');
+  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const randomId = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
   
-  const timeStr = now.getHours().toString().padStart(2, '0') +
-                 now.getMinutes().toString().padStart(2, '0') +
-                 now.getSeconds().toString().padStart(2, '0');
-  
-  // 添加一个随机数以避免文件名冲突
-  const randomId = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-  
-  // 返回不包含中文字符的文件名
   return `doc_${dateStr}_${timeStr}_${randomId}.${templateType}`;
-};
-
-// 下载文件
-export const downloadFile = (blob: Blob, fileName: string): void => {
-  saveAs(blob, fileName);
-};
+}
