@@ -249,7 +249,7 @@ function resolveFieldValue(fieldName: string, recordData: Record<string, any>, l
   // 3. 日期特殊格式
   if (fieldName.toLowerCase().includes('日期') || 
       fieldName.toLowerCase().includes('date') || 
-      fieldName.toLowerCase().includes('time')) {
+      fieldName.includes('time')) {
     
     // 中文日期格式
     const chineseKey = `${fieldName}_chinese`;
@@ -748,32 +748,28 @@ export const processXlsxTemplate = async (
               
               // 如果有替换，更新单元格值
               if (newValue !== cellValue) {
-                // 保存原始公式
+                // 获取原始公式
                 const originalFormula = cell.formula;
                 const hasFormula = !!originalFormula;
                 
-                // 更新单元格值
-                if (typeof newValue === 'number') {
-                  cell.value = newValue; // 数字类型
-                } else if (cellValue.includes('{报名单位计数}')) {
-                  const numValue = Number(newValue);
-                  if (!isNaN(numValue)) {
-                    cell.value = numValue;
+                if (!hasFormula) {
+                  // 只处理非公式单元格，直接更新值
+                  if (typeof newValue === 'number') {
+                    cell.value = newValue; // 数字类型
+                  } else if (cellValue.includes('{报名单位计数}')) {
+                    const numValue = Number(newValue);
+                    if (!isNaN(numValue)) {
+                      cell.value = numValue;
+                    } else {
+                      cell.value = newValue;
+                    }
                   } else {
                     cell.value = newValue;
                   }
-                } else {
-                  cell.value = newValue;
+                  
+                  processedCells++;
                 }
-                
-                // 记录公式到注释
-                if (hasFormula && !cell.note) {
-                  try {
-                    cell.note = `原公式: ${originalFormula}`;
-                  } catch (e) { /* 忽略注释添加失败 */ }
-                }
-                
-                processedCells++;
+                // 如果是公式单元格，不做任何处理，保持原样
               }
             }
           } catch (e) { /* 忽略单元格处理错误 */ }
